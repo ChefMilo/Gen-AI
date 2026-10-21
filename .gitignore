@@ -218,3 +218,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# Project data: lives in the shared Drive folder "Gen AI/Data/", never in git
+*.parquet
+/data/raw/
+/data/text/
+/data/index/
+/data/prices/
