@@ -1,0 +1,46 @@
+"""Finding format (interface 5 in docs/design.md section 7)."""
+
+from typing import Literal
+
+from pydantic import BaseModel, model_validator
+
+from dsl.signal import SignalSpec
+from store.schema import EventType
+
+System = Literal["R0", "R1", "R2", "R3", "R3-U"]
+Direction = Literal["long", "short"]
+
+
+class EvidenceQuote(BaseModel):
+    """An exact quote, tied to an event or to a retrieved document."""
+
+    event_id: str | None = None
+    doc_ref: str | None = None
+    quote: str
+
+    @model_validator(mode="after")
+    def _needs_source(self) -> "EvidenceQuote":
+        if self.event_id is None and self.doc_ref is None:
+            raise ValueError("evidence needs an event_id or a doc_ref")
+        return self
+
+
+# TODO(member-3): owner confirms. Placeholder agreed with Member 5 (Evaluation),
+# which matches findings to planted signals on event_ids.
+class Finding(BaseModel):
+    finding_id: str
+    session_id: str
+    system: System
+    signal_id: str
+    signal_spec: SignalSpec
+    event_type: EventType
+    event_ids: list[str]
+    n_events: int
+    direction: Direction
+    effect_car: float
+    t_stat: float
+    p_value_raw: float
+    p_value_corrected: float
+    passed_correction: bool
+    rationale: str
+    evidence: list[EvidenceQuote]
