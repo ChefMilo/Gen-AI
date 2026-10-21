@@ -279,7 +279,7 @@ project/
 │ ├── harness/ # lockout, budget, corrections, audit log
 │ ├── universes/ # planted + placebo generators
 │ ├── baselines/ # R0 grid search, R1 single-shot
-│ └── eval/ # scoring, matching, statistics, RAG eval
+│ └── evaluation/ # scoring, matching, statistics, RAG eval
 ├── app/ # Streamlit demo
 ├── results/ # metrics, traces, figures
 └── README.md
