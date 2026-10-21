@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from agent.finding import EvidenceQuote, Finding
 from backtest.result import BacktestResult
 from dsl.signal import SignalSpec
 
@@ -34,5 +35,5 @@ def inspect_results(signal_id: str) -> dict[str, Any]:
     raise NotImplementedError
 
 
-def report_finding(signal_id: str, rationale: str, evidence: list[str]) -> dict[str, Any]:
+def report_finding(signal_id: str, rationale: str, evidence: list[EvidenceQuote]) -> Finding:
     raise NotImplementedError

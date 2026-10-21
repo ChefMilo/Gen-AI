@@ -47,7 +47,8 @@ def test_event_rejects_non_edgar_event_types(event_type):
 
 
 def test_event_text_feature_needs_label_and_quote():
-    event = make_event(text_features={"buyback_rationale": {"label": "undervalued", "quote": "..."}})
+    feature = {"label": "undervalued", "quote": "..."}
+    event = make_event(text_features={"buyback_rationale": feature})
     assert event.text_features["buyback_rationale"].label == "undervalued"
     with pytest.raises(ValidationError):
         make_event(text_features={"buyback_rationale": {"label": "undervalued"}})
