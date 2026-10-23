@@ -11,3 +11,11 @@ min_events: 20  # minimum events per signal
 jaccard_min: 0.6  # finding vs planted event set overlap to count as recovered
 alpha: 0.05  # significance level after correction
 seed: 0
+
+agent:
+  model: null  # null = use $AGENT_MODEL
+  max_steps: 60  # model turns per session
+  max_tokens: 2048  # per model response
+  tool_result_max_chars: 4000  # longer tool results are truncated
+  cache_dir: results/llm_cache
+  trace_dir: results/traces
