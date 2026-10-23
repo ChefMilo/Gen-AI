@@ -33,6 +33,7 @@ class Usage(BaseModel):
 
 class LLMResponse(BaseModel):
     text: str = ""
+    thinking: str = ""  # readable reasoning text, if the provider returns any
     tool_calls: list[ToolCall] = Field(default_factory=list)
     stop_reason: str = "end_turn"
     usage: Usage = Field(default_factory=Usage)
@@ -89,8 +90,9 @@ def _jsonable(value: Any) -> Any:
     raise TypeError(f"not JSON-serialisable: {type(value).__name__}")
 
 
-def cache_key(model: str | None, system: str, messages: list[dict], tools: list[dict]) -> str:
-    payload = {"model": model, "system": system, "messages": messages, "tools": tools}
+def cache_key(settings: Any, system: str, messages: list[dict], tools: list[dict]) -> str:
+    """settings: the model and anything else that changes the answer (max_tokens, effort)."""
+    payload = {"settings": settings, "system": system, "messages": messages, "tools": tools}
     text = json.dumps(payload, sort_keys=True, default=_jsonable)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -98,15 +100,18 @@ def cache_key(model: str | None, system: str, messages: list[dict], tools: list[
 class CachedClient:
     """Wraps a client; identical requests are answered from JSON files in cache_dir."""
 
+    SETTINGS = ("model", "max_tokens", "effort")
+
     def __init__(self, inner: LLMClient, cache_dir: str | Path):
         self.inner = inner
         self.model = getattr(inner, "model", None)
+        self.settings = {name: getattr(inner, name, None) for name in self.SETTINGS}
         self.cache_dir = Path(cache_dir)
         self.hits = 0
         self.misses = 0
 
     def complete(self, system: str, messages: list[dict], tools: list[dict]) -> LLMResponse:
-        path = self.cache_dir / f"{cache_key(self.model, system, messages, tools)}.json"
+        path = self.cache_dir / f"{cache_key(self.settings, system, messages, tools)}.json"
         if path.exists():
             self.hits += 1
             return LLMResponse.model_validate_json(path.read_text(encoding="utf-8"))
@@ -163,6 +168,7 @@ def from_anthropic_message(message: dict) -> LLMResponse:
     """A Messages API response (as a JSON dict) -> LLMResponse."""
     content = message.get("content", [])
     text = "".join(b["text"] for b in content if b["type"] == "text")
+    thinking = "".join(b.get("thinking", "") for b in content if b["type"] == "thinking")
     calls = [
         ToolCall(id=b["id"], name=b["name"], arguments=b.get("input") or {})
         for b in content
@@ -171,6 +177,7 @@ def from_anthropic_message(message: dict) -> LLMResponse:
     usage = message.get("usage") or {}
     return LLMResponse(
         text=text,
+        thinking=thinking,
         tool_calls=calls,
         stop_reason=message.get("stop_reason") or "",
         usage=Usage(
@@ -180,28 +187,45 @@ def from_anthropic_message(message: dict) -> LLMResponse:
     )
 
 
-class AnthropicClient:
-    """Claude via the Messages API. Model and max_tokens come from config, never code."""
+def build_anthropic_request(
+    model: str,
+    max_tokens: int,
+    effort: str | None,
+    system: str,
+    messages: list[dict],
+    tools: list[dict],
+) -> dict:
+    """Keyword arguments for messages.create(). Optional settings are left out when unset."""
+    request: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": to_anthropic_messages(messages),
+        "cache_control": {"type": "ephemeral"},  # the loop resends the whole history each step
+    }
+    if tools:
+        request["tools"] = to_anthropic_tools(tools)
+    if effort:
+        request["output_config"] = {"effort": effort}
+    return request
 
-    def __init__(self, model: str | None, max_tokens: int):
+
+class AnthropicClient:
+    """Claude via the Messages API. Settings come from config, never code."""
+
+    def __init__(self, model: str | None, max_tokens: int, effort: str | None = None):
         if not model:
             raise ValueError("No model set: fill agent.model in the config or set $AGENT_MODEL")
         import anthropic  # agent extra; imported here so tests never need it
 
         self.model = model
         self.max_tokens = max_tokens
+        self.effort = effort
         self._client = anthropic.Anthropic()  # key from $ANTHROPIC_API_KEY
 
     def complete(self, system: str, messages: list[dict], tools: list[dict]) -> LLMResponse:
-        kwargs: dict[str, Any] = {}
-        if tools:
-            kwargs["tools"] = to_anthropic_tools(tools)
-        message = self._client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=system,
-            messages=to_anthropic_messages(messages),
-            cache_control={"type": "ephemeral"},  # the loop resends the whole history each step
-            **kwargs,
+        request = build_anthropic_request(
+            self.model, self.max_tokens, self.effort, system, messages, tools
         )
+        message = self._client.messages.create(**request)
         return from_anthropic_message(message.model_dump(mode="json", exclude_none=True))

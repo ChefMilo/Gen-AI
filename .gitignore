@@ -226,3 +226,7 @@ __marimo__/
 /data/text/
 /data/index/
 /data/prices/
+
+# Agent outputs: archive final runs to Drive, never commit raw caches
+/results/llm_cache/
+/results/traces/

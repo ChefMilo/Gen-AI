@@ -6,7 +6,8 @@ def test_default_config_has_agent_section(monkeypatch):
     agent = load_config()["agent"]
     assert agent["model"] is None
     assert agent["max_steps"] == 60
-    assert agent["max_tokens"] == 2048
+    assert agent["max_tokens"] == 16000
+    assert agent["effort"] is None
     assert agent["tool_result_max_chars"] == 4000
     assert agent["cache_dir"] == "results/llm_cache"
     assert agent["trace_dir"] == "results/traces"

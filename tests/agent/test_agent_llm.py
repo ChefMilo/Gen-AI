@@ -11,6 +11,7 @@ from agent.llm import (
     ToolCall,
     Usage,
     assistant_message,
+    build_anthropic_request,
     cache_key,
     from_anthropic_message,
     to_anthropic_messages,
@@ -78,6 +79,14 @@ def test_cache_key_depends_on_every_part():
     assert cache_key(*base[:3], []) != key
 
 
+def test_cache_is_not_shared_across_settings(tmp_path):
+    first, second = FakeLLM([LLMResponse(text="a")]), FakeLLM([LLMResponse(text="b")])
+    first.effort, second.effort = "low", "high"
+    messages = [{"role": "user", "text": "hi"}]
+    assert CachedClient(first, tmp_path).complete("s", messages, TOOLS).text == "a"
+    assert CachedClient(second, tmp_path).complete("s", messages, TOOLS).text == "b"
+
+
 def test_cache_key_accepts_tool_call_models():
     def history():
         return [assistant_message(LLMResponse(tool_calls=[call()]))]
@@ -141,7 +150,7 @@ def test_tools_keep_only_api_fields():
 
 def test_anthropic_response_converts_to_llm_response():
     content = [
-        {"type": "thinking", "thinking": "", "signature": "sig"},
+        {"type": "thinking", "thinking": "Small caps react more.", "signature": "sig"},
         {"type": "text", "text": "Testing "},
         {"type": "text", "text": "now."},
         {"type": "tool_use", "id": "t9", "name": "run_backtest", "input": {"signal_id": "s1"}},
@@ -153,6 +162,7 @@ def test_anthropic_response_converts_to_llm_response():
     }
     response = from_anthropic_message(message)
     assert response.text == "Testing now."
+    assert response.thinking == "Small caps react more."
     assert response.tool_calls == [call("run_backtest", "t9", signal_id="s1")]
     assert response.stop_reason == "tool_use"
     assert response.usage == Usage(input_tokens=120, output_tokens=30)
@@ -170,3 +180,17 @@ def test_anthropic_round_trip_keeps_tool_ids():
 def test_anthropic_client_needs_a_model():
     with pytest.raises(ValueError, match="AGENT_MODEL"):
         AnthropicClient(model=None, max_tokens=100)  # fails before importing anthropic
+
+
+def test_request_omits_optional_settings_when_unset():
+    request = build_anthropic_request("m", 16000, None, "sys", [{"role": "user", "text": "hi"}], [])
+    assert "output_config" not in request
+    assert "tools" not in request
+    assert request["model"] == "m" and request["max_tokens"] == 16000
+    assert request["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_request_passes_effort_and_tools_when_set():
+    request = build_anthropic_request("m", 16000, "high", "sys", [], TOOLS)
+    assert request["output_config"] == {"effort": "high"}
+    assert request["tools"] == TOOLS
