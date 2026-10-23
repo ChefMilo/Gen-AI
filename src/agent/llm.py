@@ -1,0 +1,207 @@
+"""LLM clients behind one provider-neutral interface.
+
+The loop only sees these neutral messages:
+
+    {"role": "user", "text": str}
+    {"role": "assistant", "text": str, "tool_calls": [ToolCall, ...], "raw": Any}
+    {"role": "tool_results", "results": [{"tool_call_id": str, "content": str, "is_error": bool}]}
+
+"raw" on an assistant message is the provider's own content (e.g. Anthropic content
+blocks, including signed thinking blocks). A client may replay it verbatim; clients
+that don't understand it ignore it. Tools are [{"name", "description", "input_schema"}].
+"""
+
+import copy
+import hashlib
+import json
+from pathlib import Path
+from typing import Any, Protocol
+
+from pydantic import BaseModel, Field
+
+
+class ToolCall(BaseModel):
+    id: str
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class Usage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+class LLMResponse(BaseModel):
+    text: str = ""
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    stop_reason: str = "end_turn"
+    usage: Usage = Field(default_factory=Usage)
+    raw: Any = None  # provider content, JSON-serialisable
+
+
+class LLMClient(Protocol):
+    def complete(self, system: str, messages: list[dict], tools: list[dict]) -> LLMResponse: ...
+
+
+def assistant_message(response: LLMResponse) -> dict:
+    """The neutral assistant message to append after a model turn."""
+    return {
+        "role": "assistant",
+        "text": response.text,
+        "tool_calls": list(response.tool_calls),
+        "raw": response.raw,
+    }
+
+
+# --- Fake (tests) -------------------------------------------------------------
+
+
+class FakeLLMExhausted(RuntimeError):
+    pass
+
+
+class FakeLLM:
+    """Returns scripted responses in order and records every call it receives."""
+
+    model = "fake"
+
+    def __init__(self, script: list[LLMResponse]):
+        self.script = list(script)
+        self.calls: list[dict] = []
+
+    def complete(self, system: str, messages: list[dict], tools: list[dict]) -> LLMResponse:
+        self.calls.append(
+            {"system": system, "messages": copy.deepcopy(messages), "tools": copy.deepcopy(tools)}
+        )
+        if len(self.calls) > len(self.script):
+            raise FakeLLMExhausted(
+                f"FakeLLM script has {len(self.script)} responses; call {len(self.calls)} has none"
+            )
+        return self.script[len(self.calls) - 1]
+
+
+# --- Cache --------------------------------------------------------------------
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    raise TypeError(f"not JSON-serialisable: {type(value).__name__}")
+
+
+def cache_key(model: str | None, system: str, messages: list[dict], tools: list[dict]) -> str:
+    payload = {"model": model, "system": system, "messages": messages, "tools": tools}
+    text = json.dumps(payload, sort_keys=True, default=_jsonable)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+class CachedClient:
+    """Wraps a client; identical requests are answered from JSON files in cache_dir."""
+
+    def __init__(self, inner: LLMClient, cache_dir: str | Path):
+        self.inner = inner
+        self.model = getattr(inner, "model", None)
+        self.cache_dir = Path(cache_dir)
+        self.hits = 0
+        self.misses = 0
+
+    def complete(self, system: str, messages: list[dict], tools: list[dict]) -> LLMResponse:
+        path = self.cache_dir / f"{cache_key(self.model, system, messages, tools)}.json"
+        if path.exists():
+            self.hits += 1
+            return LLMResponse.model_validate_json(path.read_text(encoding="utf-8"))
+        self.misses += 1
+        response = self.inner.complete(system, messages, tools)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(response.model_dump_json(), encoding="utf-8")
+        return response
+
+
+# --- Anthropic ----------------------------------------------------------------
+
+
+def to_anthropic_messages(messages: list[dict]) -> list[dict]:
+    """Neutral messages -> Messages API messages."""
+    out = []
+    for m in messages:
+        if m["role"] == "user":
+            out.append({"role": "user", "content": m["text"]})
+        elif m["role"] == "assistant":
+            content = m.get("raw")
+            if content is None:  # not produced by Anthropic (e.g. a scripted turn)
+                content = [{"type": "text", "text": m["text"]}] if m.get("text") else []
+                for call in m.get("tool_calls", []):
+                    call = ToolCall.model_validate(call)
+                    block = {"type": "tool_use", "id": call.id, "name": call.name}
+                    content.append({**block, "input": call.arguments})
+            if content:
+                out.append({"role": "assistant", "content": content})
+        elif m["role"] == "tool_results":
+            blocks = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": r["tool_call_id"],
+                    "content": r["content"],
+                    "is_error": r["is_error"],
+                }
+                for r in m["results"]
+            ]
+            out.append({"role": "user", "content": blocks})
+        else:
+            raise ValueError(f"unknown message role: {m['role']}")
+    return out
+
+
+def to_anthropic_tools(tools: list[dict]) -> list[dict]:
+    return [
+        {"name": t["name"], "description": t["description"], "input_schema": t["input_schema"]}
+        for t in tools
+    ]
+
+
+def from_anthropic_message(message: dict) -> LLMResponse:
+    """A Messages API response (as a JSON dict) -> LLMResponse."""
+    content = message.get("content", [])
+    text = "".join(b["text"] for b in content if b["type"] == "text")
+    calls = [
+        ToolCall(id=b["id"], name=b["name"], arguments=b.get("input") or {})
+        for b in content
+        if b["type"] == "tool_use"
+    ]
+    usage = message.get("usage") or {}
+    return LLMResponse(
+        text=text,
+        tool_calls=calls,
+        stop_reason=message.get("stop_reason") or "",
+        usage=Usage(
+            input_tokens=usage.get("input_tokens", 0), output_tokens=usage.get("output_tokens", 0)
+        ),
+        raw=content,
+    )
+
+
+class AnthropicClient:
+    """Claude via the Messages API. Model and max_tokens come from config, never code."""
+
+    def __init__(self, model: str | None, max_tokens: int):
+        if not model:
+            raise ValueError("No model set: fill agent.model in the config or set $AGENT_MODEL")
+        import anthropic  # agent extra; imported here so tests never need it
+
+        self.model = model
+        self.max_tokens = max_tokens
+        self._client = anthropic.Anthropic()  # key from $ANTHROPIC_API_KEY
+
+    def complete(self, system: str, messages: list[dict], tools: list[dict]) -> LLMResponse:
+        kwargs: dict[str, Any] = {}
+        if tools:
+            kwargs["tools"] = to_anthropic_tools(tools)
+        message = self._client.messages.create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            system=system,
+            messages=to_anthropic_messages(messages),
+            cache_control={"type": "ephemeral"},  # the loop resends the whole history each step
+            **kwargs,
+        )
+        return from_anthropic_message(message.model_dump(mode="json", exclude_none=True))
