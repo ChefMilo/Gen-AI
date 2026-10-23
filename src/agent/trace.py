@@ -45,7 +45,10 @@ class Trace:
         model: str | None,
         max_tokens: int | None,
         effort: str | None,
+        code_version: dict | None = None,
+        **extra: Any,
     ) -> dict:
+        """system is the system prompt; extra holds session facts (research system, period)."""
         settings = {"model": model, "max_tokens": max_tokens, "effort": effort}
         return self.log(
             "session_start",
@@ -53,6 +56,8 @@ class Trace:
             system=system,
             universe_id=universe_id,
             settings=settings,
+            code_version=code_version,
+            **extra,
         )
 
     def model_turn(self, step: int, response: LLMResponse) -> dict:

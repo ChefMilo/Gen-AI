@@ -1,4 +1,4 @@
-from agent.config import MODEL_ENV, load_config
+from agent.config import MODEL_ENV, REPO_ROOT, load_config
 
 
 def test_default_config_has_agent_section(monkeypatch):
@@ -9,8 +9,8 @@ def test_default_config_has_agent_section(monkeypatch):
     assert agent["max_tokens"] == 16000
     assert agent["effort"] is None
     assert agent["tool_result_max_chars"] == 4000
-    assert agent["cache_dir"] == "results/llm_cache"
-    assert agent["trace_dir"] == "results/traces"
+    assert agent["cache_dir"] == REPO_ROOT / "results" / "llm_cache"
+    assert agent["trace_dir"] == REPO_ROOT / "results" / "traces"
 
 
 def test_model_comes_from_env_when_unset(monkeypatch):
@@ -32,3 +32,17 @@ def test_env_vars_expand_and_unset_ones_become_none(monkeypatch, tmp_path):
     config = load_config(path)
     assert config["data_dir"] == "/data"
     assert config["other"] is None
+
+
+def test_relative_agent_dirs_resolve_against_repo_root_not_cwd(monkeypatch, tmp_path):
+    path = tmp_path / "c.yaml"
+    path.write_text("agent:\n  cache_dir: out/cache\n")
+    monkeypatch.chdir(tmp_path)
+    assert load_config(path)["agent"]["cache_dir"] == REPO_ROOT / "out" / "cache"
+
+
+def test_absolute_agent_dirs_are_used_as_given(tmp_path):
+    path = tmp_path / "c.yaml"
+    target = (tmp_path / "traces").resolve()
+    path.write_text(f"agent:\n  trace_dir: '{target.as_posix()}'\n")
+    assert load_config(path)["agent"]["trace_dir"] == target

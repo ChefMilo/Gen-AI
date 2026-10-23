@@ -44,3 +44,13 @@ class Finding(BaseModel):
     passed_correction: bool
     rationale: str
     evidence: list[EvidenceQuote]
+
+
+# What the agent submits with report_finding. Per the team design (docs/design.md 3.3,
+# step 7 of section 4), the harness turns claims into full Finding objects at session
+# end: corrections need every test the session ran, so the agent cannot compute them.
+class FindingClaim(BaseModel):
+    signal_id: str
+    rationale: str
+    evidence: list[EvidenceQuote]
+    step: int
