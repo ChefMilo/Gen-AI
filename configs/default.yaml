@@ -15,6 +15,7 @@ seed: 0
 agent:
   model: null  # null = use $AGENT_MODEL
   max_steps: 60  # model turns per session
+  max_session_input_tokens: 400000  # cached and uncached input, summed over turns
   max_tokens: 16000  # per model response, thinking included
   effort: null  # null = provider default; else low | medium | high | xhigh | max
   tool_result_max_chars: 4000  # longer tool results are truncated

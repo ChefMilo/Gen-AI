@@ -1,6 +1,6 @@
 """Append-only JSONL trace of one research session: trace_dir/<session_id>.jsonl.
 
-Event kinds: session_start, model_turn, tool_call, notebook, session_end.
+Event kinds: session_start, model_turn, tool_call, notebook, nudge, session_end.
 Every line has seq, ts, session_id and kind. Raw provider blocks (signatures etc.)
 are never written; only the readable thinking text is kept, in its own field.
 """
@@ -93,6 +93,9 @@ class Trace:
             **extra,
         )
 
+    def nudge(self, step: int, text: str) -> dict:
+        return self.log("nudge", step=step, text=text)
+
     def session_end(self, reason: str) -> dict:
         return self.log("session_end", reason=reason, totals=self.totals())
 
@@ -107,7 +110,12 @@ class Trace:
             "tool_calls": len(calls),
             "invalid_calls": sum(e["is_error"] for e in calls),
             "input_tokens": sum(e["usage"]["input_tokens"] for e in turns),
+            "cache_read_input_tokens": sum(e["usage"]["cache_read_input_tokens"] for e in turns),
+            "cache_creation_input_tokens": sum(
+                e["usage"]["cache_creation_input_tokens"] for e in turns
+            ),
             "output_tokens": sum(e["usage"]["output_tokens"] for e in turns),
+            "nudges": sum(e["kind"] == "nudge" for e in self.events),
             "stop_reasons": dict(Counter(e["stop_reason"] for e in turns)),
             # protocol adherence: successful backtests by whether their signal cites a hypothesis
             "backtests_linked_to_hypothesis": sum(e.get("hypothesis_id") is not None

@@ -82,7 +82,14 @@ TEXT_FEATURES: dict[str, tuple[str, tuple[str, ...]]] = {
     "buyback_rationale": ("buyback", BUYBACK_RATIONALE_LABELS),
 }
 BREAKDOWNS = ("year", "sector", "mcap_bucket")
-NUMERIC_OPS = {">", ">=", "<", "<="}
+EVENT_TYPES = ("dividend", "buyback")
+HOLDING_DAYS = (5,)  # the fakes only have 5-day CARs
+DIRECTIONS = ("long", "short")
+OPS_BY_KIND = {
+    "number": ("==", "!=", ">", ">=", "<", "<=", "in"),
+    "category": ("==", "!=", "in"),
+    "bool": ("==", "!="),
+}
 
 
 # --- Data ---------------------------------------------------------------------------
@@ -132,8 +139,9 @@ class FakeCondition(ToolArgs):
         values = self.value if isinstance(self.value, list) else [self.value]
         if (self.op == "in") != isinstance(self.value, list):
             raise ValueError("use a list value with 'in', and a single value otherwise")
-        if self.op in NUMERIC_OPS and kind != "number":
-            raise ValueError(f"{self.op} needs a numeric field; {self.field} is {kind}")
+        if self.op not in OPS_BY_KIND[kind]:
+            ops = " ".join(OPS_BY_KIND[kind])
+            raise ValueError(f"{self.field} is a {kind} field; use one of: {ops}")
         if allowed and any(v not in allowed for v in values):
             raise ValueError(f"{self.field} must be one of {list(allowed)}")
         return self
@@ -152,11 +160,11 @@ class FakeTextFilter(ToolArgs):
 
 
 class FakeSignalSpec(ToolArgs):
-    event_type: Literal["dividend", "buyback"]
+    event_type: Literal[EVENT_TYPES]  # type: ignore[valid-type]
     conditions: list[FakeCondition] = Field(default_factory=list, max_length=5)
     text_filter: FakeTextFilter | None = None
-    holding_days: Literal[5] = Field(5, description="The fakes only have 5-day CARs.")
-    direction: Literal["long", "short"] = "long"
+    holding_days: Literal[HOLDING_DAYS] = HOLDING_DAYS[0]  # type: ignore[valid-type]
+    direction: Literal[DIRECTIONS] = "long"  # type: ignore[valid-type]
 
     @model_validator(mode="after")
     def _fields_match_event_type(self) -> "FakeSignalSpec":
@@ -257,6 +265,18 @@ class FakeBacktester:
         groups = {str(k): event_study(g["car"]) for k, g in rows.groupby(keys)}
         return {"signal_id": signal_id, "by": by, "groups": groups}
 
+    def signal_options(self) -> dict[str, Any]:
+        return {
+            "event_types": list(EVENT_TYPES),
+            "operators": {kind: list(ops) for kind, ops in OPS_BY_KIND.items()},
+            "holding_days": list(HOLDING_DAYS),
+            "directions": list(DIRECTIONS),
+            "breakdowns": list(BREAKDOWNS),
+        }
+
+    def budget_status(self) -> dict[str, int]:
+        return {"budget": self.budget, "tests_used": self.tests_used}
+
 
 class FakeEventQuery:
     def __init__(self, events: pd.DataFrame, research_end: date = FAKE_RESEARCH_END):
@@ -332,6 +352,31 @@ class FakeRetriever:
         return {name: list(labels) for name, (_, labels) in TEXT_FEATURES.items()}
 
 
+# --- Smoke-test verdict ------------------------------------------------------------------
+# Stand-in for Member 5's matcher (src/evaluation/): event-set Jaccard only. The real rule
+# also requires the same event type, the right sign and passing the corrected threshold.
+
+
+def jaccard(a: set, b: set) -> float:
+    return len(a & b) / len(a | b) if a | b else 0.0
+
+
+def planted_event_ids(backtester: FakeBacktester) -> set[str]:
+    """Planted events the agent could see (research period only)."""
+    return set(backtester.events.loc[planted_mask(backtester.events), "event_id"])
+
+
+def best_planted_overlap(backtester: FakeBacktester, claims) -> tuple[float, str | None]:
+    """(best Jaccard, signal_id) over the claimed signals' full backtested event sets."""
+    planted = planted_event_ids(backtester)
+    best, best_id = 0.0, None
+    for claim in claims:
+        rows = backtester.results.get(claim.signal_id)
+        if rows is not None and (score := jaccard(set(rows["event_id"]), planted)) > best:
+            best, best_id = score, claim.signal_id
+    return best, best_id
+
+
 def make_fake_ports(seed: int = 0, budget: int = 15, research_end: date = FAKE_RESEARCH_END):
     """(backtester, events, retriever, universe_id) over one fake planted universe."""
     events = make_fake_universe(seed)
@@ -347,7 +392,7 @@ def make_fake_ports(seed: int = 0, budget: int = 15, research_end: date = FAKE_R
 
 
 class QueryEventsArgs(ToolArgs):
-    event_type: Literal["dividend", "buyback"]
+    event_type: Literal[EVENT_TYPES]  # type: ignore[valid-type]
     conditions: list[FakeCondition] = Field(default_factory=list, max_length=5)
     limit: int = Field(10, ge=0, le=50)
 
@@ -363,13 +408,13 @@ class SignalIdArgs(ToolArgs):
 
 class InspectResultsArgs(ToolArgs):
     signal_id: str
-    by: Literal["year", "sector", "mcap_bucket"]
+    by: Literal[BREAKDOWNS]  # type: ignore[valid-type]
 
 
 class SearchArgs(ToolArgs):
     query: str = Field(min_length=1)
     ticker: str | None = None
-    event_type: Literal["dividend", "buyback"] | None = None
+    event_type: Literal[EVENT_TYPES] | None = None  # type: ignore[valid-type]
     k: int = Field(5, ge=1, le=20)
 
 

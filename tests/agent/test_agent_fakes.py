@@ -1,9 +1,7 @@
 import json
-from datetime import date
 
 import pytest
 
-import agent.session as session_module
 from agent import fakes
 from agent.fakes import (
     FAKE_RESEARCH_END,
@@ -12,9 +10,7 @@ from agent.fakes import (
     FakeEventQuery,
     FakeRetriever,
     make_fake_universe,
-    register_fake_tools,
 )
-from agent.session import new_session
 from agent.tools import dispatch, schemas_for
 from store.schema import Event
 from universes.fake_events import BUYBACK_RATIONALE_LABELS, DIVIDEND_FRAMING_LABELS
@@ -23,29 +19,6 @@ NULL_SPEC = {  # no planted effect: pure noise
     "event_type": "dividend",
     "conditions": [{"field": "mcap_bucket", "op": "==", "value": "large"}],
 }
-
-
-@pytest.fixture(scope="module")
-def events():
-    return make_fake_universe(seed=0)
-
-
-@pytest.fixture
-def fake_session(events, registry, monkeypatch):
-    monkeypatch.setattr(session_module, "code_version", lambda: None)
-    register_fake_tools()
-
-    def make(system="R2", budget=15):
-        config = {"research_start": date(2016, 1, 1), "research_end": None,
-                  "agent": {"tool_result_max_chars": 20000}}
-        return new_session(
-            system, config, "fake_planted_seed0",
-            FakeBacktester(events, budget), FakeEventQuery(events),
-            retriever=FakeRetriever(events) if system != "R2" else None,
-            research_end=FAKE_RESEARCH_END, in_memory=True,
-        )
-
-    return make
 
 
 def call(s, name, **arguments):
@@ -196,7 +169,7 @@ def test_failed_backtest_does_not_mark_signal_tested(fake_session):
                                                      "value": "tiny"}]},
          "mcap_bucket must be one of ['small', 'mid', 'large']"),
         ({"event_type": "dividend", "conditions": [{"field": "sector", "op": ">", "value": 3}]},
-         "> needs a numeric field"),
+         "sector is a category field; use one of: == != in"),
         ({"event_type": "buyback", "conditions": [{"field": "dividend_change_pct", "op": ">",
                                                     "value": 10}]},
          "dividend_change_pct only applies to dividend events"),
@@ -248,3 +221,76 @@ def test_all_ten_tools_have_flat_schemas_once_fakes_are_registered(fake_session)
     names = [t["name"] for t in schemas_for("R3")]
     assert len(names) == 10
     assert all("$ref" not in json.dumps(t["input_schema"]) for t in schemas_for("R3"))
+
+
+# --- No outcome leaks --------------------------------------------------------------------
+
+OUTCOME_KEYS = {"car", "car_5d", "mean_car", "t_stat", "p_value_raw", "hit_rate", "ret",
+                "adj_close", "close", "open", "high", "low", "raw_close", "volume"}
+
+
+def _keys(value):
+    if isinstance(value, dict):
+        return set(value) | set().union(*(_keys(v) for v in value.values()))
+    if isinstance(value, list):
+        return set().union(*(_keys(v) for v in value))
+    return set()
+
+
+def test_condition_fields_exclude_outcomes():
+    assert not OUTCOME_KEYS & set(fakes.FIELDS)
+
+
+def test_only_backtest_tools_expose_outcomes(fake_session):
+    s = fake_session("R3")
+    conditions = PLANTED_SPEC["conditions"]
+    outputs = {
+        "record_hypothesis": call(s, "record_hypothesis", hypothesis="h", rationale="r"),
+        "query_events": call(s, "query_events", event_type="dividend", conditions=conditions,
+                             limit=50),
+        "search_announcements": call(s, "search_announcements", query="dividend share", k=20),
+        "define_signal": call(s, "define_signal",
+                              spec={"event_type": "dividend", "conditions": conditions}),
+    }
+    ids = [r["event_id"] for r in outputs["search_announcements"][0]["results"]]
+    outputs["get_text_feature"] = call(s, "get_text_feature", event_ids=ids,
+                                       feature="dividend_framing")
+    outputs["view_notebook"] = (dispatch(s, "view_notebook", {})[0], False)
+    for name, (result, is_error) in outputs.items():
+        assert not is_error, name
+        if name == "view_notebook":
+            assert not any(k in result for k in ("mean_car", "t_stat")), name  # nothing run yet
+        else:
+            assert not OUTCOME_KEYS & _keys(result), name
+
+    result, _ = call(s, "run_backtest", signal_id="sig-1")
+    assert {"mean_car", "t_stat"} <= set(result)
+    groups, _ = call(s, "inspect_results", signal_id="sig-1", by="year")
+    assert all("mean_car" in g for g in groups["groups"].values())
+
+
+# --- Smoke-test matcher (stand-in for Member 5's) ------------------------------------------
+
+
+def test_jaccard():
+    assert fakes.jaccard({1, 2, 3}, {2, 3, 4}) == 0.5
+    assert fakes.jaccard(set(), set()) == 0.0
+
+
+def test_best_planted_overlap(events):
+    from agent.finding import FindingClaim
+
+    bt = FakeBacktester(events, budget=5)
+    planted = bt.define({k: PLANTED_SPEC[k] for k in ("event_type", "conditions")})
+    null = bt.define(NULL_SPEC)
+    untested = bt.define(NULL_SPEC)
+    bt.run(planted)
+    bt.run(null)
+
+    def claim(sid):
+        return FindingClaim(signal_id=sid, rationale="r", evidence=[], step=1)
+
+    assert fakes.best_planted_overlap(bt, [claim(null), claim(planted)]) == (1.0, planted)
+    # large caps never overlap the small-cap planted set; an untested claim has no events
+    assert fakes.best_planted_overlap(bt, [claim(null), claim(untested)]) == (0.0, None)
+    assert fakes.best_planted_overlap(bt, []) == (0.0, None)

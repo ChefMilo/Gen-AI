@@ -19,6 +19,13 @@ class StubBacktester:
     def breakdown(self, signal_id, by):
         return {}
 
+    def signal_options(self):
+        return {"event_types": ["dividend"], "operators": {"number": [">"]},
+                "holding_days": [5], "directions": ["long"], "breakdowns": ["year"]}
+
+    def budget_status(self):
+        return {"budget": 3, "tests_used": 0}
+
 
 class StubEvents:
     def query(self, event_type, conditions, limit):
@@ -69,3 +76,40 @@ def registry(monkeypatch):
     """A private copy of the tool registry, so tests can register tools freely."""
     monkeypatch.setattr(tools, "_TOOLS", dict(tools._TOOLS))
     return tools._TOOLS
+
+
+# --- Fake ports on Member 5's synthetic data (built once per test run) -------------------
+
+
+@pytest.fixture(scope="session")
+def events():
+    from agent.fakes import make_fake_universe
+
+    return make_fake_universe(seed=0)
+
+
+@pytest.fixture
+def fake_session(events, registry, monkeypatch):
+    """make(system, budget, **agent_overrides) -> session on fresh fake ports."""
+    from agent.fakes import (
+        FAKE_RESEARCH_END,
+        FakeBacktester,
+        FakeEventQuery,
+        FakeRetriever,
+        register_fake_tools,
+    )
+
+    monkeypatch.setattr(session_module, "code_version", lambda: None)
+    register_fake_tools()
+
+    def make(system="R2", budget=15, **agent_overrides):
+        config = agent_config(tool_result_max_chars=20000, **agent_overrides)
+        config["min_events"] = 20
+        return new_session(
+            system, config, "fake_planted_seed0",
+            FakeBacktester(events, budget), FakeEventQuery(events),
+            retriever=FakeRetriever(events) if system in {"R3", "R3-U"} else None,
+            research_end=FAKE_RESEARCH_END, in_memory=True,
+        )
+
+    return make

@@ -26,6 +26,15 @@ class Backtester(Protocol):
         """Results of an already-run signal split by year, sector, mcap_bucket, ..."""
         ...
 
+    def signal_options(self) -> dict[str, Any]:
+        """What a signal may contain: event_types, operators (by field kind), holding_days,
+        directions, breakdowns. The task brief is built from this, never hard-coded."""
+        ...
+
+    def budget_status(self) -> dict[str, int]:
+        """{"budget": total backtests allowed, "tests_used": backtests run so far}"""
+        ...
+
 
 class Retriever(Protocol):
     def search(self, query: str, filters: dict[str, Any], k: int) -> list[dict[str, Any]]:

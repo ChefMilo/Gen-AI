@@ -165,7 +165,8 @@ def test_anthropic_response_converts_to_llm_response():
     assert response.thinking == "Small caps react more."
     assert response.tool_calls == [call("run_backtest", "t9", signal_id="s1")]
     assert response.stop_reason == "tool_use"
-    assert response.usage == Usage(input_tokens=120, output_tokens=30)
+    assert response.usage == Usage(input_tokens=120, output_tokens=30, cache_read_input_tokens=100)
+    assert response.usage.total_input_tokens == 220
     assert response.raw == content
     json.dumps(response.model_dump(mode="json"))  # cacheable
 
