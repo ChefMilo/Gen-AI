@@ -2,7 +2,7 @@
 
 from agent.finding import FindingClaim
 from agent.llm import LLMClient, assistant_message
-from agent.prompts import SYSTEM_PROMPT, build_task_brief
+from agent.prompts import SYSTEM_PROMPT, build_task_brief, prompt_version
 from agent.session import ResearchSession
 from agent.tools import dispatch_calls, schemas_for
 
@@ -19,8 +19,9 @@ def run_session(session: ResearchSession, client: LLMClient) -> list[FindingClai
     max_steps = agent.get("max_steps", 60)
     token_cap = agent.get("max_session_input_tokens")
     tools = schemas_for(session.system)
-    messages = [{"role": "user", "text": build_task_brief(session)}]
-    session.log_start(SYSTEM_PROMPT)
+    brief = build_task_brief(session)
+    messages = [{"role": "user", "text": brief}]
+    session.log_start(SYSTEM_PROMPT, prompt_version(SYSTEM_PROMPT, brief, tools))
 
     reason, nudged, input_tokens = "step_cap", False, 0
     try:

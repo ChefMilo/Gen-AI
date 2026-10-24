@@ -104,7 +104,9 @@ class Trace:
         calls = [e for e in self.events if e["kind"] == "tool_call"]
         backtests = [e for e in calls if e["name"] == "run_backtest" and not e["is_error"]]
         notes = [e for e in self.events if e["kind"] == "notebook"]
-        claimed = {e["data"].get("hypothesis_id") for e in notes if e["entry_kind"] == "claim"}
+        claim_notes = [e for e in notes if e["entry_kind"] == "claim"]
+        claimed = {e["data"].get("hypothesis_id") for e in claim_notes}
+        quotes = [q for e in claim_notes for q in e["data"].get("evidence", [])]
         return {
             "steps": len(turns),
             "tool_calls": len(calls),
@@ -123,6 +125,9 @@ class Trace:
             "backtests_unlinked": sum(e.get("hypothesis_id") is None for e in backtests),
             "hypotheses_recorded": sum(e["entry_kind"] == "hypothesis" for e in notes),
             "hypotheses_with_claim": len(claimed - {None}),
+            # evidence grounding: quotes that are exact substrings of earlier tool results
+            "evidence_quotes": len(quotes),
+            "evidence_quotes_grounded": sum(q["grounded"] for q in quotes),
         }
 
 

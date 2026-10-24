@@ -145,7 +145,9 @@ def dispatch(session: ResearchSession, name: str, arguments: Any) -> tuple[str, 
     else:
         try:
             args = tool.args_model.model_validate(arguments)
+            session.call_extra = {}
             result = tool.handler(session, args)
+            extra |= session.call_extra  # measurements a handler wants on this trace event
             content = result if isinstance(result, str) else json.dumps(result, default=str)
             is_error = False
         except ValidationError as e:
@@ -194,6 +196,44 @@ def record_signal(
     )
 
 
+# --- Evidence grounding (measured, never enforced) -----------------------------
+
+
+def _collapse(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings(v)]
+    return []
+
+
+def evidence_corpus(session: ResearchSession) -> list[str]:
+    """Every successful tool result the model has seen so far: the raw text, plus each
+    string inside it when it parses as JSON (so quotes are not hidden by JSON escaping)."""
+    corpus = []
+    for e in session.trace.events:
+        if e["kind"] != "tool_call" or e["is_error"]:
+            continue
+        corpus.append(_collapse(e["result"]))
+        try:
+            corpus += [_collapse(s) for s in _strings(json.loads(e["result"]))]
+        except json.JSONDecodeError:  # e.g. a truncated result
+            pass
+    return corpus
+
+
+def is_grounded(quote: str, corpus: list[str]) -> bool:
+    """Exact substring of an earlier tool result, after collapsing whitespace."""
+    q = _collapse(quote)
+    return bool(q) and any(q in text for text in corpus)
+
+
 # --- The agent's own tools ----------------------------------------------------
 
 
@@ -235,6 +275,8 @@ def report_finding(session: ResearchSession, args: ReportFindingArgs) -> dict:
     if any(c.signal_id == sid for c in session.claims):
         raise ToolError(f"a finding for {sid!r} was already reported; one claim per signal")
 
+    corpus = evidence_corpus(session)
+    grounded = [is_grounded(q.quote, corpus) for q in args.evidence]
     claim = FindingClaim(
         signal_id=sid, rationale=args.rationale, evidence=args.evidence, step=session.step
     )
@@ -245,8 +287,13 @@ def report_finding(session: ResearchSession, args: ReportFindingArgs) -> dict:
             "signal_id": sid,
             "hypothesis_id": session.signal_hypotheses.get(sid),
             "n_evidence": len(args.evidence),
+            "evidence": [
+                {**q.model_dump(), "grounded": g}
+                for q, g in zip(args.evidence, grounded, strict=True)
+            ],
         },
     )
+    session.call_extra["evidence_grounded"] = grounded  # not shown to the model
     return {"accepted": True, "claims_so_far": len(session.claims)}
 
 

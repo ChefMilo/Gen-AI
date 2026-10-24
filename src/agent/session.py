@@ -40,6 +40,7 @@ class ResearchSession:
     signals: dict[str, dict] = field(default_factory=dict)  # signal_id -> spec it was defined with
     tested_signals: set[str] = field(default_factory=set)  # signal_ids run_backtest has run
     signal_hypotheses: dict[str, str | None] = field(default_factory=dict)  # signal -> h-id
+    call_extra: dict[str, Any] = field(default_factory=dict)  # handler -> this call's trace event
     done: bool = False
     invalid_calls: int = 0
     step: int = 0
@@ -53,7 +54,7 @@ class ResearchSession:
             e.data["hypothesis_id"] for e in self.notebook.entries if e.kind == "hypothesis"
         ]
 
-    def log_start(self, system_prompt: str) -> dict:
+    def log_start(self, system_prompt: str, prompt_version: str | None = None) -> dict:
         agent = self.agent_config
         return self.trace.session_start(
             self.config,
@@ -63,6 +64,7 @@ class ResearchSession:
             agent.get("max_tokens"),
             agent.get("effort"),
             code_version=self.code_version,
+            prompt_version=prompt_version,
             agent_system=self.system,
             research_start=self.research_start,
             research_end=self.research_end,

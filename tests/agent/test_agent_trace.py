@@ -76,6 +76,8 @@ def test_totals():
         "backtests_unlinked": 1,
         "hypotheses_recorded": 0,
         "hypotheses_with_claim": 0,
+        "evidence_quotes": 0,
+        "evidence_quotes_grounded": 0,
     }
     assert trace.totals() == expected
     assert trace.events[-1]["totals"] == expected
