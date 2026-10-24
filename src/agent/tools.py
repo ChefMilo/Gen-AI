@@ -134,8 +134,9 @@ def dispatch(session: ResearchSession, name: str, arguments: Any) -> tuple[str, 
     """
     started = time.perf_counter()
     extra = {}
-    if name == "run_backtest":  # protocol adherence, measured not enforced
-        extra["hypothesis_recorded"] = any(e.kind == "hypothesis" for e in session.notebook.entries)
+    if name == "run_backtest":  # protocol adherence: measured, never enforced
+        signal_id = arguments.get("signal_id") if isinstance(arguments, dict) else None
+        extra["hypothesis_id"] = session.signal_hypotheses.get(signal_id)
 
     tool = _TOOLS.get(name)
     if tool is None or session.system not in tool.systems:
@@ -171,6 +172,28 @@ def dispatch_calls(session: ResearchSession, calls: list[ToolCall]) -> list[dict
     return results
 
 
+# --- Helpers for signal tools (used by fakes.py now, real handlers later) -----
+
+
+def check_hypothesis_id(session: ResearchSession, hypothesis_id: str | None) -> None:
+    if hypothesis_id is not None and hypothesis_id not in session.hypothesis_ids():
+        known = ", ".join(session.hypothesis_ids()) or "none yet; call record_hypothesis"
+        raise ToolError(f"unknown hypothesis_id {hypothesis_id!r}. Recorded: {known}")
+
+
+def record_signal(
+    session: ResearchSession, signal_id: str, spec: dict, hypothesis_id: str | None
+) -> None:
+    """Remember a defined signal and which hypothesis it tests (or None)."""
+    session.signals[signal_id] = spec
+    session.signal_hypotheses[signal_id] = hypothesis_id
+    linked = f" (tests {hypothesis_id})" if hypothesis_id else ""
+    session.notebook.add(
+        "signal_defined", session.step, f"{signal_id}{linked}",
+        {"signal_id": signal_id, "hypothesis_id": hypothesis_id, "spec": spec},
+    )
+
+
 # --- The agent's own tools ----------------------------------------------------
 
 
@@ -180,9 +203,12 @@ class RecordHypothesisArgs(ToolArgs):
 
 
 def record_hypothesis(session: ResearchSession, args: RecordHypothesisArgs) -> dict:
-    session.notebook.add("hypothesis", session.step, args.hypothesis, {"rationale": args.rationale})
-    n = sum(e.kind == "hypothesis" for e in session.notebook.entries)
-    return {"recorded": True, "hypotheses_so_far": n}
+    hypothesis_id = f"h{len(session.hypothesis_ids()) + 1}"
+    session.notebook.add(
+        "hypothesis", session.step, args.hypothesis,
+        {"hypothesis_id": hypothesis_id, "rationale": args.rationale},
+    )
+    return {"recorded": True, "hypothesis_id": hypothesis_id}
 
 
 class ViewNotebookArgs(ToolArgs):
@@ -215,7 +241,11 @@ def report_finding(session: ResearchSession, args: ReportFindingArgs) -> dict:
     session.claims.append(claim)
     session.notebook.add(
         "claim", session.step, f"{sid}: {args.rationale}",
-        {"signal_id": sid, "n_evidence": len(args.evidence)},
+        {
+            "signal_id": sid,
+            "hypothesis_id": session.signal_hypotheses.get(sid),
+            "n_evidence": len(args.evidence),
+        },
     )
     return {"accepted": True, "claims_so_far": len(session.claims)}
 

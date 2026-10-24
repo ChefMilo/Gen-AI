@@ -39,6 +39,7 @@ class ResearchSession:
     claims: list[FindingClaim] = field(default_factory=list)
     signals: dict[str, dict] = field(default_factory=dict)  # signal_id -> spec it was defined with
     tested_signals: set[str] = field(default_factory=set)  # signal_ids run_backtest has run
+    signal_hypotheses: dict[str, str | None] = field(default_factory=dict)  # signal -> h-id
     done: bool = False
     invalid_calls: int = 0
     step: int = 0
@@ -46,6 +47,11 @@ class ResearchSession:
     @property
     def agent_config(self) -> dict[str, Any]:
         return self.config.get("agent", {})
+
+    def hypothesis_ids(self) -> list[str]:
+        return [
+            e.data["hypothesis_id"] for e in self.notebook.entries if e.kind == "hypothesis"
+        ]
 
     def log_start(self, system_prompt: str) -> dict:
         agent = self.agent_config

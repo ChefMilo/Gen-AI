@@ -22,7 +22,8 @@ DESCRIPTIONS: dict[str, str] = {
     # --- Signals and backtests (Member 4) ---
     "define_signal": (
         "Register a trading signal: an event type, conditions on event fields, an optional "
-        "text filter, a holding period and a direction. Returns a signal_id. Free."
+        "text filter, a holding period and a direction. Cite the hypothesis_id (from "
+        "record_hypothesis) that this signal tests. Returns a signal_id. Free."
     ),
     "run_backtest": (
         "Run the event study for a defined signal. USES ONE UNIT OF THE TESTING BUDGET, "

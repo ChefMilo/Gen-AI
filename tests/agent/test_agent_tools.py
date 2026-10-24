@@ -230,20 +230,22 @@ def test_every_call_is_traced_including_rejected_ones(make_session):
     assert s.trace.totals()["invalid_calls"] == s.invalid_calls == 2
 
 
-def test_run_backtest_records_whether_a_hypothesis_came_first(fake_signal_tools, make_session):
+def test_run_backtest_records_the_linked_hypothesis(fake_signal_tools, make_session):
     s = make_session()
     call(s, "define_signal", signal_id="a")
-    call(s, "define_signal", signal_id="b")
     call(s, "run_backtest", signal_id="a")
     call(s, "record_hypothesis", hypothesis="h", rationale="r")
+    s.signal_hypotheses["b"] = "h1"  # what define_signal with hypothesis_id="h1" stores
+    call(s, "define_signal", signal_id="b")
     call(s, "run_backtest", signal_id="b")
     call(s, "run_backtest", signal_id="zzz")  # fails; not counted as a backtest
     backtests = [e for e in s.trace.events if e.get("name") == "run_backtest"]
-    assert [e["hypothesis_recorded"] for e in backtests] == [False, True, True]
+    assert [e["hypothesis_id"] for e in backtests] == [None, "h1", None]
     other = [e for e in s.trace.events if e.get("name") in {"define_signal", "record_hypothesis"}]
-    assert other and all("hypothesis_recorded" not in e for e in other)
+    assert other and all("hypothesis_id" not in e for e in other)
     totals = s.trace.totals()
-    assert (totals["backtests_with_hypothesis"], totals["backtests_without_hypothesis"]) == (1, 1)
+    assert (totals["backtests_linked_to_hypothesis"], totals["backtests_unlinked"]) == (1, 1)
+    assert totals["hypotheses_recorded"] == 1 and totals["hypotheses_with_claim"] == 0
 
 
 def test_calls_in_one_turn_run_in_order(fake_signal_tools, make_session):
@@ -267,11 +269,14 @@ def test_record_hypothesis_writes_the_notebook(make_session):
     s = make_session()
     s.step = 2
     content, is_error = call(s, "record_hypothesis", hypothesis="Hikes work", rationale="signal")
-    assert not is_error and json.loads(content) == {"recorded": True, "hypotheses_so_far": 1}
+    assert not is_error and json.loads(content) == {"recorded": True, "hypothesis_id": "h1"}
     entry = s.notebook.entries[0]
     assert (entry.kind, entry.step, entry.summary, entry.data) == (
-        "hypothesis", 2, "Hikes work", {"rationale": "signal"}
+        "hypothesis", 2, "Hikes work", {"hypothesis_id": "h1", "rationale": "signal"}
     )
+    content, _ = call(s, "record_hypothesis", hypothesis="Second", rationale="r")
+    assert json.loads(content)["hypothesis_id"] == "h2"
+    assert s.hypothesis_ids() == ["h1", "h2"]
 
 
 def test_record_hypothesis_needs_text(make_session):

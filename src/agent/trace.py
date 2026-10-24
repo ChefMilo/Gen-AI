@@ -81,7 +81,7 @@ class Trace:
         duration_ms: float,
         **extra: Any,
     ) -> dict:
-        """extra: per-tool measurements, e.g. hypothesis_recorded on run_backtest."""
+        """extra: per-tool measurements, e.g. hypothesis_id on run_backtest."""
         return self.log(
             "tool_call",
             step=step,
@@ -99,7 +99,9 @@ class Trace:
     def totals(self) -> dict:
         turns = [e for e in self.events if e["kind"] == "model_turn"]
         calls = [e for e in self.events if e["kind"] == "tool_call"]
-        backtests = [e for e in calls if "hypothesis_recorded" in e and not e["is_error"]]
+        backtests = [e for e in calls if e["name"] == "run_backtest" and not e["is_error"]]
+        notes = [e for e in self.events if e["kind"] == "notebook"]
+        claimed = {e["data"].get("hypothesis_id") for e in notes if e["entry_kind"] == "claim"}
         return {
             "steps": len(turns),
             "tool_calls": len(calls),
@@ -107,9 +109,12 @@ class Trace:
             "input_tokens": sum(e["usage"]["input_tokens"] for e in turns),
             "output_tokens": sum(e["usage"]["output_tokens"] for e in turns),
             "stop_reasons": dict(Counter(e["stop_reason"] for e in turns)),
-            # successful backtests, split by whether a hypothesis had been recorded first
-            "backtests_with_hypothesis": sum(e["hypothesis_recorded"] for e in backtests),
-            "backtests_without_hypothesis": sum(not e["hypothesis_recorded"] for e in backtests),
+            # protocol adherence: successful backtests by whether their signal cites a hypothesis
+            "backtests_linked_to_hypothesis": sum(e.get("hypothesis_id") is not None
+                                                  for e in backtests),
+            "backtests_unlinked": sum(e.get("hypothesis_id") is None for e in backtests),
+            "hypotheses_recorded": sum(e["entry_kind"] == "hypothesis" for e in notes),
+            "hypotheses_with_claim": len(claimed - {None}),
         }
 
 
