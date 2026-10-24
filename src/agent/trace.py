@@ -79,7 +79,9 @@ class Trace:
         result: str,
         is_error: bool,
         duration_ms: float,
+        **extra: Any,
     ) -> dict:
+        """extra: per-tool measurements, e.g. hypothesis_recorded on run_backtest."""
         return self.log(
             "tool_call",
             step=step,
@@ -88,6 +90,7 @@ class Trace:
             result=result,
             is_error=is_error,
             duration_ms=round(duration_ms, 1),
+            **extra,
         )
 
     def session_end(self, reason: str) -> dict:
@@ -96,6 +99,7 @@ class Trace:
     def totals(self) -> dict:
         turns = [e for e in self.events if e["kind"] == "model_turn"]
         calls = [e for e in self.events if e["kind"] == "tool_call"]
+        backtests = [e for e in calls if "hypothesis_recorded" in e and not e["is_error"]]
         return {
             "steps": len(turns),
             "tool_calls": len(calls),
@@ -103,6 +107,9 @@ class Trace:
             "input_tokens": sum(e["usage"]["input_tokens"] for e in turns),
             "output_tokens": sum(e["usage"]["output_tokens"] for e in turns),
             "stop_reasons": dict(Counter(e["stop_reason"] for e in turns)),
+            # successful backtests, split by whether a hypothesis had been recorded first
+            "backtests_with_hypothesis": sum(e["hypothesis_recorded"] for e in backtests),
+            "backtests_without_hypothesis": sum(not e["hypothesis_recorded"] for e in backtests),
         }
 
 

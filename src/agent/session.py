@@ -38,6 +38,7 @@ class ResearchSession:
     code_version: dict | None = None
     claims: list[FindingClaim] = field(default_factory=list)
     signals: dict[str, dict] = field(default_factory=dict)  # signal_id -> spec it was defined with
+    tested_signals: set[str] = field(default_factory=set)  # signal_ids run_backtest has run
     done: bool = False
     invalid_calls: int = 0
     step: int = 0

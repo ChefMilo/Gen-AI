@@ -69,6 +69,8 @@ def test_totals():
         "input_tokens": 450,
         "output_tokens": 55,
         "stop_reasons": {"tool_use": 2, "end_turn": 1},
+        "backtests_with_hypothesis": 0,
+        "backtests_without_hypothesis": 0,
     }
     assert trace.totals() == expected
     assert trace.events[-1]["totals"] == expected

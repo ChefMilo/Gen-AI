@@ -3,7 +3,6 @@ from datetime import date, datetime
 import pytest
 from pydantic import ValidationError
 
-from agent import tools
 from backtest.result import BacktestResult
 from dsl.signal import SignalSpec
 from store import prices
@@ -63,11 +62,6 @@ def test_signal_spec_defaults_to_spy_and_rejects_sti():
 
 def test_backtest_result_placeholder():
     assert BacktestResult(signal_id="s1").signal_id == "s1"
-
-
-def test_tool_placeholders_raise():
-    with pytest.raises(NotImplementedError):
-        tools.run_backtest("s1")
 
 
 def test_data_dir_requires_env_var(monkeypatch, tmp_path):
