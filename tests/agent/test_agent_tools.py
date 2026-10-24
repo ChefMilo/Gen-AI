@@ -11,6 +11,7 @@ from agent.tools import (
     TRUNCATED,
     Tool,
     ToolArgs,
+    ToolError,
     dispatch,
     dispatch_calls,
     inline_defs,
@@ -42,7 +43,7 @@ def fake_define(session, args):
 
 def fake_backtest(session, args):
     if args.signal_id not in session.signals:
-        raise KeyError(f"unknown signal_id {args.signal_id!r}")
+        raise ToolError(f"unknown signal_id {args.signal_id!r}")
     session.tested_signals.add(args.signal_id)
     return {"signal_id": args.signal_id, "t_stat": 2.5}
 
@@ -159,27 +160,39 @@ def test_non_object_arguments_are_a_validation_error(make_session):
     assert is_error and content.startswith("Invalid arguments for finish")
 
 
-@pytest.mark.parametrize("exc", [ValueError("bad value"), KeyError("no such key"),
-                                 RuntimeError("budget exhausted")])
-def test_known_handler_errors_are_returned(registry, make_session, exc):
+def test_tool_errors_are_returned_to_the_agent(registry, make_session):
     def handler(session, args):
-        raise exc
+        raise ToolError("budget exhausted: 0 of 15 backtests left")
 
     register(Tool("inspect_results", SignalArgs, handler))
     s = make_session()
     content, is_error = call(s, "inspect_results", signal_id="s")
     assert is_error
-    assert content == f"Error in inspect_results: {exc.args[0]}"
+    assert content == "Error in inspect_results: budget exhausted: 0 of 15 backtests left"
     assert s.invalid_calls == 1
 
 
-def test_unexpected_handler_errors_propagate(registry, make_session):
+def test_plain_key_error_propagates_and_is_not_counted(registry, make_session):
     def handler(session, args):
-        raise TypeError("a bug")
+        return {}["missing"]  # a bug in the handler, not the agent's fault
 
     register(Tool("inspect_results", SignalArgs, handler))
-    with pytest.raises(TypeError):
-        call(make_session(), "inspect_results", signal_id="s")
+    s = make_session()
+    with pytest.raises(KeyError):
+        call(s, "inspect_results", signal_id="s")
+    assert s.invalid_calls == 0
+
+
+@pytest.mark.parametrize("exc", [ValueError("v"), RuntimeError("r"), TypeError("t")])
+def test_other_internal_errors_propagate(registry, make_session, exc):
+    def handler(session, args):
+        raise exc
+
+    register(Tool("inspect_results", SignalArgs, handler))
+    s = make_session()
+    with pytest.raises(type(exc)):
+        call(s, "inspect_results", signal_id="s")
+    assert s.invalid_calls == 0
 
 
 def test_results_are_capped_with_marker(registry, make_session):

@@ -34,9 +34,13 @@ RAG_SYSTEMS = frozenset({"R3", "R3-U"})
 
 TRUNCATED = "[truncated]"
 DEFAULT_MAX_CHARS = 4000
-HANDLED_ERRORS = (ValueError, KeyError, RuntimeError)  # anything else is a bug: let it raise
 
 NonEmpty = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class ToolError(Exception):
+    """An intentional rejection the agent should see and can recover from
+    (unknown signal, budget used up, ...). Any other exception is a bug and propagates."""
 
 
 class ToolArgs(BaseModel):
@@ -118,16 +122,16 @@ def format_validation_error(name: str, error: ValidationError) -> str:
     return f"Invalid arguments for {name}: " + "; ".join(parts)
 
 
-def _error_text(exc: Exception) -> str:
-    return str(exc.args[0]) if isinstance(exc, KeyError) and exc.args else str(exc)
-
-
 def _cap(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: max(limit - len(TRUNCATED), 0)] + TRUNCATED
 
 
 def dispatch(session: ResearchSession, name: str, arguments: Any) -> tuple[str, bool]:
-    """Run one tool call. Returns (content, is_error); known failures never raise."""
+    """Run one tool call. Returns (content, is_error).
+
+    Agent-facing errors (unknown tool, invalid arguments, ToolError) are returned and
+    counted in session.invalid_calls; every other exception propagates.
+    """
     started = time.perf_counter()
     extra = {}
     if name == "run_backtest":  # protocol adherence, measured not enforced
@@ -145,8 +149,8 @@ def dispatch(session: ResearchSession, name: str, arguments: Any) -> tuple[str, 
             is_error = False
         except ValidationError as e:
             content, is_error = format_validation_error(name, e), True
-        except HANDLED_ERRORS as e:
-            content, is_error = f"Error in {name}: {_error_text(e)}", True
+        except ToolError as e:
+            content, is_error = f"Error in {name}: {e}", True
 
     content = _cap(content, session.agent_config.get("tool_result_max_chars", DEFAULT_MAX_CHARS))
     if is_error:
@@ -199,11 +203,11 @@ def report_finding(session: ResearchSession, args: ReportFindingArgs) -> dict:
     sid = args.signal_id
     if sid not in session.signals:
         known = ", ".join(sorted(session.signals)) or "none yet"
-        raise ValueError(f"unknown signal_id {sid!r}. Defined signals: {known}")
+        raise ToolError(f"unknown signal_id {sid!r}. Defined signals: {known}")
     if sid not in session.tested_signals:
-        raise ValueError(f"signal {sid!r} was never backtested; call run_backtest first")
+        raise ToolError(f"signal {sid!r} was never backtested; call run_backtest first")
     if any(c.signal_id == sid for c in session.claims):
-        raise ValueError(f"a finding for {sid!r} was already reported; one claim per signal")
+        raise ToolError(f"a finding for {sid!r} was already reported; one claim per signal")
 
     claim = FindingClaim(
         signal_id=sid, rationale=args.rationale, evidence=args.evidence, step=session.step
