@@ -226,3 +226,10 @@ __marimo__/
 /data/text/
 /data/index/
 /data/prices/
+
+# Retrieval index, built by: python -m rag.build
+/results/rag_index/
+
+# Local copies of the shared Drive data (never in git)
+/edgar/
+/data_core*/
