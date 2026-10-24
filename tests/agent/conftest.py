@@ -31,6 +31,9 @@ class StubEvents:
     def query(self, event_type, conditions, limit):
         return {"n": 0}
 
+    def existing_event_ids(self, event_ids):
+        return set(event_ids)
+
     def available_fields(self):
         return {}
 
@@ -103,7 +106,7 @@ def fake_session(events, registry, monkeypatch):
     register_fake_tools()
 
     def make(system="R2", budget=15, **agent_overrides):
-        config = agent_config(tool_result_max_chars=20000, **agent_overrides)
+        config = agent_config(**{"tool_result_max_chars": 20000, **agent_overrides})
         config["min_events"] = 20
         return new_session(
             system, config, "fake_planted_seed0",

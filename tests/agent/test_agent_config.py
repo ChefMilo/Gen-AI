@@ -8,6 +8,7 @@ def test_default_config_has_agent_section(monkeypatch):
     assert agent["max_steps"] == 60
     assert agent["max_tokens"] == 16000
     assert agent["effort"] is None
+    assert agent["thinking_display"] == "summarized"
     assert agent["tool_result_max_chars"] == 4000
     assert agent["cache_dir"] == REPO_ROOT / "results" / "llm_cache"
     assert agent["trace_dir"] == REPO_ROOT / "results" / "traces"

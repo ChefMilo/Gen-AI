@@ -114,8 +114,10 @@ def test_full_research_path_links_hypothesis_to_claim(fake_session):
     by_year, is_error = call(s, "inspect_results", signal_id="sig-1", by="year")
     assert not is_error and set(by_year["groups"]) <= {str(y) for y in range(2016, 2023)}
 
+    assert len(result["example_event_ids"]) == 3 and "event_ids" not in result
     claim, is_error = call(s, "report_finding", signal_id="sig-1", rationale="robust",
-                           evidence=[{"event_id": result["event_ids"][0], "quote": "raised"}])
+                           evidence=[{"event_id": result["example_event_ids"][0],
+                                      "quote": "raised"}])
     assert not is_error and claim["accepted"]
 
     kinds = [e.kind for e in s.notebook.entries]
@@ -196,9 +198,10 @@ def test_query_events_counts_without_using_budget(fake_session):
     s = fake_session()
     result, is_error = call(s, "query_events", event_type="dividend",
                             conditions=PLANTED_SPEC["conditions"], limit=3)
-    assert not is_error and result["n_events"] >= 20 and len(result["sample"]) == 3
-    assert set(result["sample"][0]) == {"event_id", "ticker", "first_tradeable_date",
-                                        "dividend_change_pct", "mcap_bucket"}
+    assert not is_error and result["n_events"] >= 20 and len(result["sample_rows"]) == 3
+    assert result["sample_columns"] == ["event_id", "ticker", "first_tradeable_date",
+                                        "dividend_change_pct", "mcap_bucket"]
+    assert all(len(row) == 5 for row in result["sample_rows"])
     assert s.backtester.tests_used == 0
 
 
@@ -214,7 +217,9 @@ def test_r2_cannot_use_retrieval_but_r3_can(fake_session):
     assert all(r["doc_ref"].endswith("/ex99-1.txt") for r in found["results"])
     ids = [found["results"][0]["event_id"]]
     feature, is_error = call(r3, "get_text_feature", event_ids=ids, feature="buyback_rationale")
-    assert not is_error and feature["values"][0]["label"] in BUYBACK_RATIONALE_LABELS
+    assert not is_error and feature["n_events"] == 1
+    assert set(feature["label_counts"]) <= set(BUYBACK_RATIONALE_LABELS)
+    assert feature["examples"][0]["label"] in BUYBACK_RATIONALE_LABELS
 
 
 def test_all_ten_tools_have_flat_schemas_once_fakes_are_registered(fake_session):
@@ -247,12 +252,13 @@ def test_only_backtest_tools_expose_outcomes(fake_session):
     outputs = {
         "record_hypothesis": call(s, "record_hypothesis", hypothesis="h", rationale="r"),
         "query_events": call(s, "query_events", event_type="dividend", conditions=conditions,
-                             limit=50),
-        "search_announcements": call(s, "search_announcements", query="dividend share", k=20),
+                             limit=20),
+        "search_announcements": call(s, "search_announcements", query="dividend share", k=10),
         "define_signal": call(s, "define_signal",
                               spec={"event_type": "dividend", "conditions": conditions}),
     }
     ids = [r["event_id"] for r in outputs["search_announcements"][0]["results"]]
+    assert ids
     outputs["get_text_feature"] = call(s, "get_text_feature", event_ids=ids,
                                        feature="dividend_framing")
     outputs["view_notebook"] = (dispatch(s, "view_notebook", {})[0], False)
@@ -294,3 +300,143 @@ def test_best_planted_overlap(events):
     # large caps never overlap the small-cap planted set; an untested claim has no events
     assert fakes.best_planted_overlap(bt, [claim(null), claim(untested)]) == (0.0, None)
     assert fakes.best_planted_overlap(bt, []) == (0.0, None)
+
+
+# --- Compact model-facing views -------------------------------------------------------------
+
+MAX_CHARS = 4000  # the team default for agent.tool_result_max_chars
+EVERYTHING = {"event_type": "dividend", "conditions": [
+    {"field": "dividend_change_pct", "op": ">", "value": -100},
+    {"field": "mcap_bucket", "op": "in", "value": ["small", "mid", "large"]},
+    {"field": "sector", "op": "in", "value": list(fakes.FAKE_SECTORS)},
+    {"field": "dividend_kind", "op": "in", "value": ["regular", "special", "initial"]},
+    {"field": "dividend_per_share", "op": ">", "value": 0},
+]}
+
+
+def test_backtest_view_puts_stats_and_budget_first_and_keeps_full_ids_out(fake_session):
+    s = fake_session("R2")
+    call(s, "define_signal", spec=EVERYTHING)  # every dividend: 1500+ events
+    content, is_error = dispatch(s, "run_backtest", {"signal_id": "sig-1"})
+    view = json.loads(content)
+    assert not is_error and not content.endswith("[truncated]")
+    assert list(view)[:8] == ["signal_id", "n_events", "mean_car", "t_stat", "p_value_raw",
+                              "hit_rate", "tests_used", "budget_remaining"]
+    assert view["n_events"] > 1000 and len(view["example_event_ids"]) == 3
+    assert view["warnings"] == [] and view["budget_remaining"] == 14
+
+    event = next(e for e in s.trace.events if e.get("name") == "run_backtest")
+    assert event["result"] == content  # exactly what the model saw
+    assert len(event["event_ids"]) == view["n_events"]  # the full set, for Evaluation
+    assert s.signal_event_ids["sig-1"] == event["event_ids"]
+    assert "event_ids" not in s.notebook.entries[-1].data
+
+
+def test_backtest_view_warns_about_small_samples(fake_session):
+    s = fake_session("R2")
+    spec = {"event_type": "dividend",
+            "conditions": [{"field": "dividend_kind", "op": "==", "value": "initial"}]}
+    call(s, "define_signal", spec=spec)
+    view, _ = call(s, "run_backtest", signal_id="sig-1")
+    assert view["n_events"] < 20
+    assert "n_events below the minimum of 20; cannot be a finding" in view["warnings"]
+
+
+def test_planted_overlap_still_uses_the_full_event_set(fake_session):
+    from agent.finding import FindingClaim
+
+    s = fake_session("R2")
+    call(s, "define_signal", spec=SPEC_OF_PLANTED)
+    call(s, "run_backtest", signal_id="sig-1")
+    claim = FindingClaim(signal_id="sig-1", rationale="r", evidence=[], step=1)
+    assert fakes.best_planted_overlap(s.backtester, [claim]) == (1.0, "sig-1")
+
+
+SPEC_OF_PLANTED = {k: PLANTED_SPEC[k] for k in ("event_type", "conditions")}
+
+
+def test_every_fake_tool_result_fits_under_the_cap(fake_session):
+    s = fake_session("R3", tool_result_max_chars=MAX_CHARS)
+    long_query = "dividend share regular special repurchase million program quarterly"
+    calls = [
+        ("record_hypothesis", {"hypothesis": "x" * 500, "rationale": "y" * 500}),
+        ("query_events", {"event_type": "dividend", "conditions": EVERYTHING["conditions"],
+                          "limit": 20}),
+        ("define_signal", {"spec": EVERYTHING, "hypothesis_id": "h1"}),
+        ("run_backtest", {"signal_id": "sig-1"}),
+        ("inspect_results", {"signal_id": "sig-1", "by": "year"}),
+        ("inspect_results", {"signal_id": "sig-1", "by": "sector"}),
+        ("inspect_results", {"signal_id": "sig-1", "by": "mcap_bucket"}),
+        ("search_announcements", {"query": long_query, "k": 10}),
+    ]
+    sizes = {}
+    for name, arguments in calls:
+        content, is_error = dispatch(s, name, arguments)
+        assert not is_error, (name, content)
+        sizes[name] = max(sizes.get(name, 0), len(content))
+    ids = s.signal_event_ids["sig-1"][:200]
+    content, is_error = dispatch(s, "get_text_feature", {"event_ids": ids,
+                                                         "feature": "dividend_framing"})
+    assert not is_error
+    sizes["get_text_feature"] = len(content)
+    for _ in range(40):  # a long session's notebook
+        dispatch(s, "record_hypothesis", {"hypothesis": "z" * 200, "rationale": "w" * 200})
+    notebook, _ = dispatch(s, "view_notebook", {})
+    sizes["view_notebook"] = len(notebook)
+    assert all(size < MAX_CHARS for size in sizes.values()), sizes
+    assert notebook.startswith("(") and "earlier entries not shown" in notebook.splitlines()[0]
+
+
+# --- Value types per field kind ----------------------------------------------------------
+
+BAD_VALUES = [
+    ({"field": "mcap_bucket", "op": "==", "value": 3},
+     "mcap_bucket must be one of ['small', 'mid', 'large']"),
+    ({"field": "mcap_bucket", "op": "in", "value": ["small", 3]},
+     "mcap_bucket must be one of ['small', 'mid', 'large']"),
+    ({"field": "dividend_change_pct", "op": ">=", "value": "abc"},
+     "dividend_change_pct is a number field; value must be a number"),
+    ({"field": "dividend_change_pct", "op": ">=", "value": True},
+     "dividend_change_pct is a number field; value must be a number"),
+    ({"field": "dividend_kind", "op": "==", "value": "Special"},
+     "dividend_kind must be one of ['regular', 'special', 'initial']"),
+]
+BAD_BOOL = [
+    ({"field": "is_new_program", "op": "==", "value": "true"},
+     "is_new_program is a bool field; value must be true or false"),
+    ({"field": "is_new_program", "op": "==", "value": 1},
+     "is_new_program is a bool field; value must be true or false"),
+]
+
+
+@pytest.mark.parametrize("condition, message", BAD_VALUES)
+def test_bad_dividend_values_are_agent_errors(fake_session, condition, message):
+    s = fake_session("R2")
+    for name, arguments in [
+        ("query_events", {"event_type": "dividend", "conditions": [condition]}),
+        ("define_signal", {"spec": {"event_type": "dividend", "conditions": [condition]}}),
+    ]:
+        content, is_error = dispatch(s, name, arguments)
+        assert is_error and message in content, (name, content)
+    assert s.invalid_calls == 2 and s.signals == {}
+
+
+@pytest.mark.parametrize("condition, message", BAD_BOOL)
+def test_bad_bool_values_are_agent_errors(fake_session, condition, message):
+    s = fake_session("R2")
+    for name, arguments in [
+        ("query_events", {"event_type": "buyback", "conditions": [condition]}),
+        ("define_signal", {"spec": {"event_type": "buyback", "conditions": [condition]}}),
+    ]:
+        content, is_error = dispatch(s, name, arguments)
+        assert is_error and message in content, (name, content)
+    assert s.invalid_calls == 2
+
+
+def test_good_bool_and_number_values_still_work(fake_session):
+    s = fake_session("R2")
+    result, is_error = call(s, "query_events", event_type="buyback", conditions=[
+        {"field": "is_new_program", "op": "==", "value": True},
+        {"field": "buyback_pct_mcap", "op": ">=", "value": 3},
+    ])
+    assert not is_error and result["n_events"] > 0

@@ -106,7 +106,7 @@ def cache_key(settings: Any, system: str, messages: list[dict], tools: list[dict
 class CachedClient:
     """Wraps a client; identical requests are answered from JSON files in cache_dir."""
 
-    SETTINGS = ("model", "max_tokens", "effort")
+    SETTINGS = ("model", "max_tokens", "effort", "thinking_display")
 
     def __init__(self, inner: LLMClient, cache_dir: str | Path):
         self.inner = inner
@@ -196,6 +196,9 @@ def from_anthropic_message(message: dict) -> LLMResponse:
     )
 
 
+THINKING_DISPLAYS = ("summarized", "omitted")  # anthropic.types.ThinkingConfigAdaptiveParam
+
+
 def build_anthropic_request(
     model: str,
     max_tokens: int,
@@ -203,6 +206,7 @@ def build_anthropic_request(
     system: str,
     messages: list[dict],
     tools: list[dict],
+    thinking_display: str | None = None,
 ) -> dict:
     """Keyword arguments for messages.create(). Optional settings are left out when unset."""
     request: dict[str, Any] = {
@@ -216,25 +220,37 @@ def build_anthropic_request(
         request["tools"] = to_anthropic_tools(tools)
     if effort:
         request["output_config"] = {"effort": effort}
+    if thinking_display:
+        request["thinking"] = {"type": "adaptive", "display": thinking_display}
     return request
 
 
 class AnthropicClient:
     """Claude via the Messages API. Settings come from config, never code."""
 
-    def __init__(self, model: str | None, max_tokens: int, effort: str | None = None):
+    def __init__(
+        self,
+        model: str | None,
+        max_tokens: int,
+        effort: str | None = None,
+        thinking_display: str | None = None,
+    ):
         if not model:
             raise ValueError("No model set: fill agent.model in the config or set $AGENT_MODEL")
+        if thinking_display not in (None, *THINKING_DISPLAYS):
+            raise ValueError(f"thinking_display must be one of {THINKING_DISPLAYS} or null")
         import anthropic  # agent extra; imported here so tests never need it
 
         self.model = model
         self.max_tokens = max_tokens
         self.effort = effort
+        self.thinking_display = thinking_display
         self._client = anthropic.Anthropic()  # key from $ANTHROPIC_API_KEY
 
     def complete(self, system: str, messages: list[dict], tools: list[dict]) -> LLMResponse:
         request = build_anthropic_request(
-            self.model, self.max_tokens, self.effort, system, messages, tools
+            self.model, self.max_tokens, self.effort, system, messages, tools,
+            self.thinking_display,
         )
         message = self._client.messages.create(**request)
         return from_anthropic_message(message.model_dump(mode="json", exclude_none=True))

@@ -48,8 +48,10 @@ EVENTS = [
     turn(4),
     {"kind": "notebook", "entry_kind": "claim", "step": 4, "summary": "sig-1: robust",
      "data": {"signal_id": "sig-1", "hypothesis_id": "h1", "n_evidence": 2, "evidence": [
-         {"event_id": "e1", "doc_ref": None, "quote": "raised the dividend", "grounded": True},
-         {"event_id": "e2", "doc_ref": None, "quote": "made up", "grounded": False}]}},
+         {"event_id": "e1", "doc_ref": None, "quote": "raised the dividend", "grounded": True,
+          "grounding_method": "event", "event_exists": True, "in_signal": True},
+         {"event_id": None, "doc_ref": "X/1/ex99-1.txt", "quote": "made up", "grounded": False,
+          "grounding_method": "text"}]}},
     tool(4, "report_finding", {"signal_id": "sig-1", "rationale": "robust", "evidence": []},
          '{"accepted": true, "claims_so_far": 1}', evidence_grounded=[True, False]),
     tool(4, "finish", {"reason": "found it"}, '{"finished": true, "claims": 1}'),
@@ -67,9 +69,9 @@ def test_header_shows_settings_code_and_prompt_version():
 def test_timeline_lines():
     out = summarize(EVENTS)
     assert "- record_hypothesis -> h1: Small-cap hikes" in out
-    assert ('- query_events dividend: dividend_change_pct > 10, mcap_bucket == "small" '
+    assert ('- query_events dividend: dividend_change_pct > 10 AND mcap_bucket == "small" '
             "-> n=59") in out
-    assert ('- define_signal [h1] dividend: dividend_change_pct > 10, mcap_bucket == "small" '
+    assert ('- define_signal [h1] dividend: dividend_change_pct > 10 AND mcap_bucket == "small" '
             "| long 5d -> sig-1") in out
     assert "- inspect_results sig-1 by mcap_bucket -> small: n=59 car=0.017" in out
     assert "NUDGE: You have not called finish." in out
@@ -100,8 +102,9 @@ def test_totals_claims_with_grounding_and_end_reason():
     out = summarize(EVENTS)
     assert "  evidence_quotes_grounded: 1" in out
     assert "claims (1):" in out and "sig-1 [h1] step 4: sig-1: robust" in out
-    assert '- [grounded] e1: "raised the dividend"' in out
-    assert '- [NOT grounded] e2: "made up"' in out
+    assert ('- [grounded/event] e1: "raised the dividend" '
+            "(event_exists=True, in_signal=True)") in out
+    assert '- [NOT grounded/text] X/1/ex99-1.txt: "made up"' in out
     assert out.splitlines()[-1] == "end reason: finished"
 
 

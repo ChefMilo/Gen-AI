@@ -43,7 +43,8 @@ def test_jsonl_lines_are_valid_ordered_and_tagged(tmp_path):
 def test_session_start_records_effective_settings():
     trace = Trace("s")
     event = trace.session_start({}, "SYSTEM", "fake-0", "m", 16000, "high")
-    assert event["settings"] == {"model": "m", "max_tokens": 16000, "effort": "high"}
+    assert event["settings"] == {"model": "m", "max_tokens": 16000, "effort": "high",
+                                 "thinking_display": None}
     assert event["system"] == "SYSTEM" and event["universe_id"] == "fake-0"
 
 
@@ -78,6 +79,10 @@ def test_totals():
         "hypotheses_with_claim": 0,
         "evidence_quotes": 0,
         "evidence_quotes_grounded": 0,
+        "evidence_quotes_event": 0,
+        "evidence_quotes_event_grounded": 0,
+        "evidence_quotes_text": 0,
+        "evidence_quotes_text_grounded": 0,
     }
     assert trace.totals() == expected
     assert trace.events[-1]["totals"] == expected

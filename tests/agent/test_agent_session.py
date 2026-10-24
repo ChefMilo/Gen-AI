@@ -126,10 +126,18 @@ def test_log_start_records_settings_universe_period_and_code_version():
     assert event["kind"] == "session_start" and event["system"] == "SYSTEM PROMPT"
     assert event["universe_id"] == "fake_planted_seed0"
     assert event["agent_system"] == "R2"
-    assert event["settings"] == {"model": "m", "max_tokens": 16000, "effort": None}
+    assert event["settings"] == {"model": "m", "max_tokens": 16000, "effort": None,
+                                 "thinking_display": None}
     assert event["code_version"] == {"commit": "abc", "dirty": True}
     assert (event["research_start"], event["research_end"]) == (date(2016, 1, 1),
                                                                  date(2022, 12, 31))
+
+
+def test_log_start_records_thinking_display():
+    config = {**CONFIG, "agent": {**CONFIG["agent"], "thinking_display": "summarized"}}
+    s = new_session("R2", config, "u", StubBacktester(), StubEvents(),
+                    research_end="2022-12-31", in_memory=True)
+    assert s.log_start("P")["settings"]["thinking_display"] == "summarized"
 
 
 def test_finding_claim():

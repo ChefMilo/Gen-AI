@@ -95,8 +95,9 @@ def test_real_run_builds_a_cached_anthropic_client(config_path, monkeypatch):
     built = {}
 
     class FakeAnthropic:
-        def __init__(self, model, max_tokens, effort):
-            built.update(model=model, max_tokens=max_tokens, effort=effort)
+        def __init__(self, model, max_tokens, effort, thinking_display):
+            built.update(model=model, max_tokens=max_tokens, effort=effort,
+                         thinking_display=thinking_display)
 
     monkeypatch.setattr(cli, "AnthropicClient", FakeAnthropic)
     args = cli.parse_args(["--system", "R2", "--model", "m"])
@@ -104,6 +105,7 @@ def test_real_run_builds_a_cached_anthropic_client(config_path, monkeypatch):
     config["agent"]["model"] = args.model
     client = cli.build_client(args, config["agent"])
     assert isinstance(client, cli.CachedClient)
-    assert built == {"model": "m", "max_tokens": 16000, "effort": None}
+    assert built == {"model": "m", "max_tokens": 16000, "effort": None,
+                     "thinking_display": "summarized"}
     assert not isinstance(cli.build_client(cli.parse_args(["--system", "R2", "--no-cache"]),
                                            config["agent"]), cli.CachedClient)

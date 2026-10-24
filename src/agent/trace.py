@@ -46,10 +46,12 @@ class Trace:
         max_tokens: int | None,
         effort: str | None,
         code_version: dict | None = None,
+        thinking_display: str | None = None,
         **extra: Any,
     ) -> dict:
         """system is the system prompt; extra holds session facts (research system, period)."""
-        settings = {"model": model, "max_tokens": max_tokens, "effort": effort}
+        settings = {"model": model, "max_tokens": max_tokens, "effort": effort,
+                    "thinking_display": thinking_display}
         return self.log(
             "session_start",
             config=config,
@@ -107,6 +109,8 @@ class Trace:
         claim_notes = [e for e in notes if e["entry_kind"] == "claim"]
         claimed = {e["data"].get("hypothesis_id") for e in claim_notes}
         quotes = [q for e in claim_notes for q in e["data"].get("evidence", [])]
+        by_method = {m: [q for q in quotes if q.get("grounding_method") == m]
+                     for m in ("event", "text")}
         return {
             "steps": len(turns),
             "tool_calls": len(calls),
@@ -128,6 +132,10 @@ class Trace:
             # evidence grounding: quotes that are exact substrings of earlier tool results
             "evidence_quotes": len(quotes),
             "evidence_quotes_grounded": sum(q["grounded"] for q in quotes),
+            "evidence_quotes_event": len(by_method["event"]),
+            "evidence_quotes_event_grounded": sum(q["grounded"] for q in by_method["event"]),
+            "evidence_quotes_text": len(by_method["text"]),
+            "evidence_quotes_text_grounded": sum(q["grounded"] for q in by_method["text"]),
         }
 
 

@@ -18,6 +18,7 @@ agent:
   max_session_input_tokens: 400000  # cached and uncached input, summed over turns
   max_tokens: 16000  # per model response, thinking included
   effort: null  # null = provider default; else low | medium | high | xhigh | max
+  thinking_display: summarized  # summarized | omitted | null (= model default)
   tool_result_max_chars: 4000  # longer tool results are truncated
   cache_dir: results/llm_cache
   trace_dir: results/traces

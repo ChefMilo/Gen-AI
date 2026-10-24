@@ -43,9 +43,10 @@ def pick(result: str, keys: tuple[str, ...]) -> dict:
 
 def conditions(spec: dict) -> str:
     parts = [f"{c['field']} {c['op']} {json.dumps(c['value'])}" for c in spec.get("conditions", [])]
-    text = ", ".join(parts) or "(no conditions)"
+    text = " AND ".join(parts) or "(no conditions)"
     if spec.get("text_filter"):
-        text += f", text {spec['text_filter']['feature']} == {spec['text_filter']['equals']}"
+        tf = spec["text_filter"]
+        text += f" AND text {tf['feature']} == {tf['equals']}"
     return text
 
 
@@ -125,7 +126,12 @@ def summarize(events: list[dict], thinking: bool = False) -> str:
         for q in c["data"].get("evidence", []):
             source = q.get("event_id") or q.get("doc_ref")
             mark = {True: "grounded", False: "NOT grounded"}.get(q.get("grounded"), "")
-            lines.append(f"    - [{mark}] {source}: \"{clip(q['quote'], 160)}\"")
+            method = q.get("grounding_method", "text")
+            detail = ""
+            if method == "event":
+                detail = (f" (event_exists={q.get('event_exists')}, "
+                          f"in_signal={q.get('in_signal')})")
+            lines.append(f"    - [{mark}/{method}] {source}: \"{clip(q['quote'], 160)}\"{detail}")
         if "evidence" not in c["data"]:  # traces from before grounding was recorded
             report = next((e for e in events if e.get("name") == "report_finding"
                            and e["step"] == c["step"] and not e["is_error"]), None)

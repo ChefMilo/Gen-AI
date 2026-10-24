@@ -234,6 +234,27 @@ def is_grounded(quote: str, corpus: list[str]) -> bool:
     return bool(q) and any(q in text for text in corpus)
 
 
+def ground_evidence(
+    session: ResearchSession, signal_id: str, evidence: list[EvidenceQuote]
+) -> list[dict]:
+    """Per quote: with an event_id, the event must exist and be in the claimed signal's full
+    event set ("event"); with only a doc_ref, the quote must appear in an earlier tool
+    result ("text")."""
+    ids = [q.event_id for q in evidence if q.event_id]
+    existing = session.events.existing_event_ids(ids) if ids else set()
+    in_signal_ids = set(session.signal_event_ids.get(signal_id, []))
+    corpus = evidence_corpus(session)
+    out = []
+    for q in evidence:
+        if q.event_id:
+            exists, in_signal = q.event_id in existing, q.event_id in in_signal_ids
+            out.append({"grounding_method": "event", "grounded": exists and in_signal,
+                        "event_exists": exists, "in_signal": in_signal})
+        else:
+            out.append({"grounding_method": "text", "grounded": is_grounded(q.quote, corpus)})
+    return out
+
+
 # --- The agent's own tools ----------------------------------------------------
 
 
@@ -256,7 +277,14 @@ class ViewNotebookArgs(ToolArgs):
 
 
 def view_notebook(session: ResearchSession, args: ViewNotebookArgs) -> str:
-    return session.notebook.render(max_entries=args.last_n)
+    """The most recent entries that fit in one tool result (older ones are noted, not cut)."""
+    limit = session.agent_config.get("tool_result_max_chars", DEFAULT_MAX_CHARS)
+    n = args.last_n or len(session.notebook.entries)
+    text = session.notebook.render(max_entries=n)
+    while len(text) > limit and n > 1:
+        n -= 1
+        text = session.notebook.render(max_entries=n)
+    return text
 
 
 class ReportFindingArgs(ToolArgs):
@@ -275,8 +303,7 @@ def report_finding(session: ResearchSession, args: ReportFindingArgs) -> dict:
     if any(c.signal_id == sid for c in session.claims):
         raise ToolError(f"a finding for {sid!r} was already reported; one claim per signal")
 
-    corpus = evidence_corpus(session)
-    grounded = [is_grounded(q.quote, corpus) for q in args.evidence]
+    grounding = ground_evidence(session, sid, args.evidence)
     claim = FindingClaim(
         signal_id=sid, rationale=args.rationale, evidence=args.evidence, step=session.step
     )
@@ -288,12 +315,13 @@ def report_finding(session: ResearchSession, args: ReportFindingArgs) -> dict:
             "hypothesis_id": session.signal_hypotheses.get(sid),
             "n_evidence": len(args.evidence),
             "evidence": [
-                {**q.model_dump(), "grounded": g}
-                for q, g in zip(args.evidence, grounded, strict=True)
+                {**q.model_dump(), **g} for q, g in zip(args.evidence, grounding, strict=True)
             ],
         },
     )
-    session.call_extra["evidence_grounded"] = grounded  # not shown to the model
+    # measured, never shown to the model
+    session.call_extra["evidence_grounded"] = [g["grounded"] for g in grounding]
+    session.call_extra["evidence_methods"] = [g["grounding_method"] for g in grounding]
     return {"accepted": True, "claims_so_far": len(session.claims)}
 
 

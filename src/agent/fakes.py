@@ -142,6 +142,10 @@ class FakeCondition(ToolArgs):
         if self.op not in OPS_BY_KIND[kind]:
             ops = " ".join(OPS_BY_KIND[kind])
             raise ValueError(f"{self.field} is a {kind} field; use one of: {ops}")
+        if kind == "number" and any(isinstance(v, (bool, str)) for v in values):
+            raise ValueError(f"{self.field} is a number field; value must be a number")
+        if kind == "bool" and not all(isinstance(v, bool) for v in values):
+            raise ValueError(f"{self.field} is a bool field; value must be true or false")
         if allowed and any(v not in allowed for v in values):
             raise ValueError(f"{self.field} must be one of {list(allowed)}")
         return self
@@ -214,6 +218,12 @@ def event_study(cars: pd.Series) -> dict[str, Any]:
 # --- Fake ports ------------------------------------------------------------------------
 
 
+def _compact(value: Any) -> Any:
+    if isinstance(value, float):
+        return round(value, 3)
+    return value.isoformat() if isinstance(value, date) else value
+
+
 def _research_only(events: pd.DataFrame, research_end: date) -> pd.DataFrame:
     """Stand-in for the harness's time lockout: the fakes never show later events."""
     return events[events["first_tradeable_date"] <= research_end].reset_index(drop=True)
@@ -249,7 +259,7 @@ class FakeBacktester:
         return {
             "signal_id": signal_id,
             **event_study(self.results[signal_id]["car"]),
-            "event_ids": list(selected["event_id"][:200]),
+            "event_ids": list(selected["event_id"]),  # all of them
             "tests_used": self.tests_used,
             "budget_remaining": self.budget - self.tests_used,
         }
@@ -286,12 +296,18 @@ class FakeEventQuery:
         spec = FakeSignalSpec(event_type=event_type, conditions=conditions)
         rows = select(self.events, spec)
         cols = ["event_id", "ticker", "first_tradeable_date", *[c.field for c in spec.conditions]]
+        cols = list(dict.fromkeys(cols))
         years = pd.to_datetime(rows["first_tradeable_date"]).dt.year.value_counts().sort_index()
+        sample = rows[cols].head(limit)
         return {
             "n_events": len(rows),
             "by_year": {str(k): int(v) for k, v in years.items()},
-            "sample": rows[list(dict.fromkeys(cols))].head(limit).to_dict(orient="records"),
+            "sample_columns": cols,  # compact: one list per row, not one dict per row
+            "sample_rows": [[_compact(v) for v in row] for row in sample.itertuples(index=False)],
         }
+
+    def existing_event_ids(self, event_ids: list[str]) -> set[str]:
+        return set(event_ids) & set(self.events["event_id"])
 
     def available_fields(self) -> dict[str, str]:
         out = {}
@@ -339,6 +355,7 @@ class FakeRetriever:
         ]
 
     def text_feature(self, event_ids: list[str], feature: str) -> list[dict[str, Any]]:
+        """Full per-event values; the tool handler shows the model a compact view."""
         if feature not in TEXT_FEATURES:
             raise ToolError(f"unknown feature {feature!r}. Available: {list(TEXT_FEATURES)}")
         rows = self.events[self.events["event_id"].isin(event_ids)]
@@ -394,7 +411,7 @@ def make_fake_ports(seed: int = 0, budget: int = 15, research_end: date = FAKE_R
 class QueryEventsArgs(ToolArgs):
     event_type: Literal[EVENT_TYPES]  # type: ignore[valid-type]
     conditions: list[FakeCondition] = Field(default_factory=list, max_length=5)
-    limit: int = Field(10, ge=0, le=50)
+    limit: int = Field(10, ge=0, le=20)
 
 
 class DefineSignalArgs(ToolArgs):
@@ -415,7 +432,7 @@ class SearchArgs(ToolArgs):
     query: str = Field(min_length=1)
     ticker: str | None = None
     event_type: Literal[EVENT_TYPES] | None = None  # type: ignore[valid-type]
-    k: int = Field(5, ge=1, le=20)
+    k: int = Field(5, ge=1, le=10)
 
 
 class TextFeatureArgs(ToolArgs):
@@ -436,14 +453,36 @@ def define_signal(session, args: DefineSignalArgs) -> dict:
     return {"signal_id": signal_id, "hypothesis_id": args.hypothesis_id}
 
 
+MODEL_BACKTEST_KEYS = ("signal_id", "n_events", "mean_car", "t_stat", "p_value_raw",
+                       "hit_rate", "tests_used", "budget_remaining")
+EXAMPLE_EVENT_IDS = 3
+TEXT_FEATURE_EXAMPLES = 5
+
+
+def backtest_view(result: dict, min_events: int | None) -> dict:
+    """What the model sees: stats and budget first, warnings, a few example event_ids."""
+    view = {k: result.get(k) for k in MODEL_BACKTEST_KEYS}
+    warnings = []
+    if result["n_events"] < 2:
+        warnings.append("too few events for statistics")
+    if min_events and result["n_events"] < min_events:
+        warnings.append(f"n_events below the minimum of {min_events}; cannot be a finding")
+    view["warnings"] = warnings
+    view["example_event_ids"] = result["event_ids"][:EXAMPLE_EVENT_IDS]
+    return view
+
+
 def run_backtest(session, args: SignalIdArgs) -> dict:
-    result = session.backtester.run(args.signal_id)
+    result = session.backtester.run(args.signal_id)  # full result, every event_id
     session.tested_signals.add(args.signal_id)  # only reached on success
-    summary = (f"{args.signal_id}: n={result['n_events']}, mean CAR={result['mean_car']}, "
-               f"t={result['t_stat']}")
-    data = {k: v for k, v in result.items() if k != "event_ids"}
+    session.signal_event_ids[args.signal_id] = list(result["event_ids"])
+    session.call_extra["event_ids"] = list(result["event_ids"])  # trace only, not the model
+    view = backtest_view(result, session.config.get("min_events"))
+    summary = (f"{args.signal_id}: n={view['n_events']}, mean CAR={view['mean_car']}, "
+               f"t={view['t_stat']}")
+    data = {k: v for k, v in view.items() if k != "example_event_ids"}
     session.notebook.add("backtest_result", session.step, summary, data)
-    return result
+    return view
 
 
 def inspect_results(session, args: InspectResultsArgs) -> dict:
@@ -456,8 +495,13 @@ def search_announcements(session, args: SearchArgs) -> dict:
 
 
 def get_text_feature(session, args: TextFeatureArgs) -> dict:
-    return {"feature": args.feature,
-            "values": session.retriever.text_feature(args.event_ids, args.feature)}
+    """Label counts over every requested event, plus a few examples with quotes."""
+    values = session.retriever.text_feature(args.event_ids, args.feature)
+    counts: dict[str, int] = {}
+    for v in values:
+        counts[v["label"]] = counts.get(v["label"], 0) + 1
+    return {"feature": args.feature, "n_events": len(values), "label_counts": counts,
+            "examples": values[:TEXT_FEATURE_EXAMPLES]}
 
 
 def register_fake_tools() -> None:

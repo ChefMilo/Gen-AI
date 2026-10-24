@@ -19,7 +19,8 @@ class Backtester(Protocol):
         ...
 
     def run(self, signal_id: str) -> dict[str, Any]:
-        """Run the event study; counts against the testing budget."""
+        """Run the event study; counts against the testing budget. Returns the stats, the
+        budget and the FULL event_ids list (the agent shows the model a compact view)."""
         ...
 
     def breakdown(self, signal_id: str, by: str) -> dict[str, Any]:
@@ -55,6 +56,10 @@ class EventQuery(Protocol):
         self, event_type: str, conditions: list[dict[str, Any]], limit: int
     ) -> dict[str, Any]:
         """Count and sample events matching the conditions."""
+        ...
+
+    def existing_event_ids(self, event_ids: list[str]) -> set[str]:
+        """The subset of event_ids that exist in the (research-period) event store."""
         ...
 
     def available_fields(self) -> dict[str, str]:

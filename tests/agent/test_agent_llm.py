@@ -191,6 +191,30 @@ def test_request_omits_optional_settings_when_unset():
     assert request["messages"] == [{"role": "user", "content": "hi"}]
 
 
+def test_request_omits_thinking_when_display_unset():
+    request = build_anthropic_request("m", 16000, None, "sys", [], [], None)
+    assert "thinking" not in request
+
+
+@pytest.mark.parametrize("display", ["summarized", "omitted"])
+def test_request_passes_thinking_display_when_set(display):
+    request = build_anthropic_request("m", 16000, None, "sys", [], [], display)
+    assert request["thinking"] == {"type": "adaptive", "display": display}
+
+
+def test_anthropic_client_rejects_unknown_thinking_display():
+    with pytest.raises(ValueError, match="thinking_display"):
+        AnthropicClient(model="m", max_tokens=100, thinking_display="loud")
+
+
+def test_cache_key_includes_thinking_display(tmp_path):
+    a, b = FakeLLM([LLMResponse(text="a")]), FakeLLM([LLMResponse(text="b")])
+    a.thinking_display, b.thinking_display = "summarized", "omitted"
+    messages = [{"role": "user", "text": "hi"}]
+    assert CachedClient(a, tmp_path).complete("s", messages, TOOLS).text == "a"
+    assert CachedClient(b, tmp_path).complete("s", messages, TOOLS).text == "b"
+
+
 def test_request_passes_effort_and_tools_when_set():
     request = build_anthropic_request("m", 16000, "high", "sys", [], TOOLS)
     assert request["output_config"] == {"effort": "high"}

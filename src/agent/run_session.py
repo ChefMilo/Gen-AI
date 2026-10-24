@@ -55,7 +55,9 @@ def build_client(args: argparse.Namespace, agent: dict) -> LLMClient:
     if args.fake_llm:
         script = json.loads(args.fake_llm.read_text(encoding="utf-8"))
         return FakeLLM([LLMResponse.model_validate(r) for r in script])
-    client: LLMClient = AnthropicClient(agent["model"], agent["max_tokens"], agent.get("effort"))
+    client: LLMClient = AnthropicClient(
+        agent["model"], agent["max_tokens"], agent.get("effort"), agent.get("thinking_display")
+    )
     return client if args.no_cache else CachedClient(client, agent["cache_dir"])
 
 
