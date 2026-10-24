@@ -23,6 +23,7 @@ from universes.fake_events import BUYBACK_RATIONALE_LABELS, DIVIDEND_FRAMING_LAB
 
 DEFAULT_HOLDING_DAYS = 5
 STRENGTHS = {0.005: "very_weak", 0.01: "weak", 0.02: "moderate", 0.04: "strong"}
+GRID_DIRECTIONS = {0.005: 1, 0.01: -1, 0.02: 1, 0.04: -1}
 
 Strength = Literal["very_weak", "weak", "moderate", "strong"]
 Complexity = Literal["single", "conjunction"]
@@ -154,14 +155,36 @@ def make_planted(
     return planted, truth
 
 
-def _base_specs() -> list[tuple[str, EventType, str | None, TextFeatureFilter | None, FeatureType]]:
+class DroppedSpec(BaseModel):
+    spec_id: str
+    n_targets: int
+
+
+def round_sig(x: float, digits: int = 1) -> float:
+    """x rounded to `digits` significant figures, e.g. 6.26 -> 6.0, 0.0347 -> 0.03."""
+    return float(f"{x:.{digits - 1}e}")
+
+
+def buyback_size_threshold(events: pd.DataFrame) -> float | None:
+    """Top quartile of buyback_pct_mcap over eligible buybacks, to 1 significant figure."""
+    rows = eligible(events)
+    values = rows.loc[rows["event_type"] == "buyback", "buyback_pct_mcap"].dropna()
+    return round_sig(float(values.quantile(0.75))) if len(values) else None
+
+
+def _base_specs(
+    events: pd.DataFrame,
+) -> list[tuple[str, EventType, str | None, TextFeatureFilter | None, FeatureType]]:
     """(name, event_type, condition, text feature, feature type) for single-feature plants."""
     framing = DIVIDEND_FRAMING_LABELS[1]  # fake_growth
     rationale = BUYBACK_RATIONALE_LABELS[0]  # fake_undervalued
+    threshold = buyback_size_threshold(events)
+    # No eligible buybacks: the condition can match nothing, so the spec is dropped.
+    large = f"buyback_pct_mcap > {'inf' if threshold is None else f'{threshold:g}'}"
     return [
         ("dividend_raise", "dividend", "dividend_change_pct > 10", None, "structured"),
         ("dividend_special", "dividend", 'dividend_kind == "special"', None, "structured"),
-        ("buyback_large", "buyback", "buyback_pct_mcap > 2", None, "structured"),
+        ("buyback_large", "buyback", large, None, "structured"),
         ("buyback_new_program", "buyback", "is_new_program == True", None, "structured"),
         ("dividend_framing_growth", "dividend", None,
          TextFeatureFilter(feature="dividend_framing", equals=framing), "text"),
@@ -170,27 +193,34 @@ def _base_specs() -> list[tuple[str, EventType, str | None, TextFeatureFilter | 
     ]
 
 
-def default_spec_grid(
-    holding_days: int = DEFAULT_HOLDING_DAYS, seed: int = 0
+def candidate_specs(
+    events: pd.DataFrame, holding_days: int = DEFAULT_HOLDING_DAYS, seed: int = 0
 ) -> list[PlantSpec]:
-    """Strengths x single/conjunction x structured/text. Conjunctions add small caps."""
+    """Strengths x single/conjunction x structured/text, before the min_events filter.
+
+    Conjunctions add small caps. Directions alternate across strengths (GRID_DIRECTIONS)
+    so that matching a finding to a plant has to get the sign right.
+    """
     specs = []
-    for name, event_type, condition, text_feature, feature_type in _base_specs():
+    for name, event_type, condition, text_feature, feature_type in _base_specs(events):
         for complexity in ("single", "conjunction"):
             cond = condition
             if complexity == "conjunction":
                 small = 'mcap_bucket == "small"'
                 cond = f"{condition} and {small}" if condition else small
+            suffix = "_small" if complexity == "conjunction" else ""
             for effect, strength in STRENGTHS.items():
-                suffix = "_small" if complexity == "conjunction" else ""
+                direction = GRID_DIRECTIONS[effect]
+                sign = "up" if direction > 0 else "down"
                 specs.append(
                     PlantSpec(
-                        spec_id=f"{name}{suffix}_{round(effect * 10_000)}bp",
+                        spec_id=f"{name}{suffix}_{sign}{round(effect * 10_000)}bp",
                         event_type=event_type,
                         condition=cond,
                         text_feature=text_feature,
                         effect=effect,
                         holding_days=holding_days,
+                        direction=direction,
                         seed=seed,
                         strength=strength,
                         complexity=complexity,
@@ -198,3 +228,20 @@ def default_spec_grid(
                     )
                 )
     return specs
+
+
+def default_spec_grid(
+    events: pd.DataFrame,
+    min_events: int,
+    holding_days: int = DEFAULT_HOLDING_DAYS,
+    seed: int = 0,
+) -> tuple[list[PlantSpec], list[DroppedSpec]]:
+    """(specs with at least min_events eligible targets in events, the dropped ones)."""
+    specs, dropped = [], []
+    for spec in candidate_specs(events, holding_days, seed):
+        n_targets = len(select_targets(events, spec))
+        if n_targets >= min_events:
+            specs.append(spec)
+        else:
+            dropped.append(DroppedSpec(spec_id=spec.spec_id, n_targets=n_targets))
+    return specs, dropped

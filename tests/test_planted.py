@@ -5,11 +5,15 @@ import pytest
 from evaluation.reference_car import CAR_COLUMNS, event_cars, summary
 from universes.fake_events import make_fake_events
 from universes.planted import (
+    GRID_DIRECTIONS,
     STRENGTHS,
     PlantSpec,
+    buyback_size_threshold,
+    candidate_specs,
     default_spec_grid,
     eligible,
     make_planted,
+    round_sig,
     select_targets,
 )
 from universes.synthetic import make_synthetic_benchmarks, make_synthetic_prices
@@ -19,11 +23,6 @@ START, END = "2015-01-01", "2020-12-31"
 H = 5
 MIN_EVENTS = 20  # configs/default.yaml
 
-# The default grid on the documented fake-events scale (PR #2: 180 tickers, 2015-2026).
-GRID_TICKERS = [f"G{i:03d}" for i in range(180)]
-GRID_START, GRID_END = "2015-01-01", "2026-12-31"
-# Special dividends are about 3% of ticker-years, so special + small cap gives about 13.
-KNOWN_SHORT = {f"dividend_special_small_{round(e * 10_000)}bp" for e in STRENGTHS}
 
 SPEC = PlantSpec(
     spec_id="raise",
@@ -255,8 +254,9 @@ def test_summary():
     assert summary(cars.iloc[:0])["n"] == 0
 
 
-def test_default_grid_shape():
-    grid = default_spec_grid()
+def test_candidate_grid_shape(events):
+    grid = candidate_specs(events)
+    assert len(grid) == 6 * 2 * len(STRENGTHS)
     assert len({s.spec_id for s in grid}) == len(grid)
     assert {s.strength for s in grid} == set(STRENGTHS.values())
     assert {(s.complexity, s.feature_type) for s in grid} == {
@@ -265,15 +265,76 @@ def test_default_grid_shape():
     }
     for s in grid:
         assert ("mcap_bucket" in (s.condition or "")) == (s.complexity == "conjunction")
+        assert s.direction == GRID_DIRECTIONS[s.effect]
+    assert {s.direction for s in grid} == {1, -1}
 
 
-@pytest.fixture(scope="module")
-def grid_events():
-    prices = make_synthetic_prices(GRID_TICKERS, GRID_START, GRID_END, seed=0)
-    return make_fake_events(prices, seed=0)
+def test_round_sig():
+    assert [round_sig(x) for x in (6.26, 0.0347, 15.2, 0.96)] == [6.0, 0.03, 20.0, 1.0]
 
 
-def test_default_grid_has_enough_targets(grid_events):
-    counts = {s.spec_id: len(select_targets(grid_events, s)) for s in default_spec_grid()}
-    short = {spec_id for spec_id, n in counts.items() if n < MIN_EVENTS}
-    assert short == KNOWN_SHORT, {k: counts[k] for k in short ^ KNOWN_SHORT}
+def test_buyback_threshold_is_top_quartile_of_eligible(events):
+    rows = eligible(events)
+    values = rows.loc[rows["event_type"] == "buyback", "buyback_pct_mcap"]
+    threshold = buyback_size_threshold(events)
+    assert threshold == round_sig(values.quantile(0.75))
+    # Ineligible rows don't move it.
+    noisy = pd.concat([events, events.assign(
+        event_id=events["event_id"] + "-x", buyback_pct_mcap=1e6, extraction_status="flagged"
+    )])
+    assert buyback_size_threshold(noisy) == threshold
+    grid = candidate_specs(events)
+    conditions = {s.condition for s in grid if s.spec_id.startswith("buyback_large")}
+    assert conditions == {f"buyback_pct_mcap > {threshold:g}",
+                          f'buyback_pct_mcap > {threshold:g} and mcap_bucket == "small"'}
+
+
+def test_buyback_threshold_without_buybacks(events):
+    dividends = events[events["event_type"] == "dividend"]
+    assert buyback_size_threshold(dividends) is None
+    specs, dropped = default_spec_grid(dividends, min_events=1)
+    assert all(s.event_type == "dividend" for s in specs)
+    assert {d.n_targets for d in dropped} == {0}
+
+
+def test_grid_drops_specs_below_min_events(events):
+    counts = {s.spec_id: len(select_targets(events, s)) for s in candidate_specs(events)}
+    min_events = sorted(set(counts.values()))[len(set(counts.values())) // 2]
+    specs, dropped = default_spec_grid(events, min_events)
+    assert {s.spec_id for s in specs} == {k for k, n in counts.items() if n >= min_events}
+    assert {d.spec_id: d.n_targets for d in dropped} == {
+        k: n for k, n in counts.items() if n < min_events
+    }
+    assert specs and dropped
+
+    everything, none = default_spec_grid(events, min_events=0)
+    assert len(everything) == len(counts) and none == []
+    nothing, all_dropped = default_spec_grid(events, min_events=max(counts.values()) + 1)
+    assert nothing == [] and len(all_dropped) == len(counts)
+
+
+def test_negative_grid_plant_reads_back_minus_effect(prices, benchmarks, events):
+    specs, _ = default_spec_grid(events, MIN_EVENTS)
+    spec = next(s for s in specs if s.direction == -1 and s.feature_type == "structured")
+    planted_prices, truth = make_planted(prices, events, spec, MIN_EVENTS)
+    overlapping = {e for o in truth.overlaps for e in o.event_ids}
+    targets = events[events["event_id"].isin(truth.target_event_ids)
+                     & ~events["event_id"].isin(overlapping)]
+    cars = event_cars(planted_prices, benchmarks, targets, spec.holding_days)
+    assert len(cars) > 0
+    np.testing.assert_allclose(cars["car"], -spec.effect, rtol=0, atol=1e-9)
+    assert summary(cars)["hit_rate"] == 0.0
+
+
+@pytest.mark.slow
+def test_default_grid_on_full_fake_universe(large_fake_events):
+    specs, dropped = default_spec_grid(large_fake_events, MIN_EVENTS)
+    for spec in specs:
+        assert len(select_targets(large_fake_events, spec)) >= MIN_EVENTS
+    assert all(d.n_targets < MIN_EVENTS for d in dropped)
+    # Every cell of the grid survives the filter in at least one spec.
+    assert {(s.complexity, s.feature_type) for s in specs} == {
+        ("single", "structured"), ("conjunction", "structured"),
+        ("single", "text"), ("conjunction", "text"),
+    }
+    assert {s.direction for s in specs} == {1, -1}
