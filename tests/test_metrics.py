@@ -181,3 +181,16 @@ def test_retention_from_dataframes_and_dicts():
     table = retention(ins, hold)
     assert table.loc[0, "ratio"] == pytest.approx(1.5) and table.loc[0, "sign_agree"] == 1.0
     assert retention([], {}).empty
+
+
+def test_pooling_columns_and_truth_rows(results):
+    tables = metrics_table(results)
+    row = tables.per_universe.query("system == 'R3' and universe_id == 'u1'").iloc[0]
+    assert row["effect_error_sum"] == pytest.approx(0.01 + 0.003)
+    assert row["effect_error_abs_sum"] == pytest.approx(0.01 + 0.003)
+    assert tables.per_universe.query("universe_id == 'p1'")["effect_error_sum"].item() == 0
+    truths = tables.truths
+    assert len(truths) == 8  # 4 truths, for R3 and R0
+    r3 = truths[truths["system"] == "R3"].set_index("spec_id")
+    assert r3["matched"].to_dict() == {"a": True, "b": True, "c": False, "d": False}
+    assert r3.loc["c", "feature_type"] == "text" and r3.loc["b", "direction"] == "down"

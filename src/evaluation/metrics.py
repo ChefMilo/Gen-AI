@@ -1,7 +1,8 @@
 """Discovery, generalisation and efficiency metrics (docs/design.md section 3, "Metrics").
 
 evaluate() scores one system's findings on one universe; metrics_table() turns a list
-of those results into one row per (system, universe_id) plus the recall breakdowns.
+of those results into one row per (system, universe_id), the recall breakdowns, and one
+row per planted truth (for statistics by group, evaluation.stats).
 
 Definitions, per (system, universe):
 - recall: matched truths / truths (planted only);
@@ -12,6 +13,8 @@ Definitions, per (system, universe):
 - effect_error: reported effect_car - the mean injected_car over the finding's
   matched measurable targets (direction * effect if the truth has none), over
   matches; nominal_effect_error: effect_car - direction * effect, alongside.
+  effect_error_sum and effect_error_abs_sum (0 with no matches) let statistics pool
+  the error over all matches rather than average per-universe means.
 """
 
 from collections.abc import Iterable, Mapping
@@ -120,6 +123,8 @@ def universe_row(result: UniverseResult) -> dict[str, Any]:
             if match.universe_type == "placebo" else nan
         ),
         **effect_errors(match.matches),
+        "effect_error_sum": float(sum(m.effect_error for m in match.matches)),
+        "effect_error_abs_sum": float(sum(abs(m.effect_error) for m in match.matches)),
     }
     if planted:
         row.update(precision(match))
@@ -137,6 +142,26 @@ def _truth_labels(truth) -> dict[str, str]:
         "event_type": spec.event_type,
         "direction": "up" if spec.direction > 0 else "down",
     }
+
+
+TRUTH_COLUMNS = ["system", "universe_id", "spec_id", *GROUPS[1:], "matched"]
+
+
+def truth_rows(results: Iterable[UniverseResult]) -> pd.DataFrame:
+    """One row per (system, universe_id, planted truth): its group labels and matched."""
+    rows = []
+    for result in results:
+        if result.match.universe_type != "planted":
+            continue
+        matched = {m.spec_id for m in result.match.matches}
+        for truth in result.record.truths:
+            labels = _truth_labels(truth)
+            rows.append({
+                "system": result.system, "universe_id": result.match.universe_id,
+                "spec_id": truth.spec.spec_id, **{g: labels[g] for g in GROUPS[1:]},
+                "matched": truth.spec.spec_id in matched,
+            })
+    return pd.DataFrame(rows, columns=TRUTH_COLUMNS)
 
 
 def recall_breakdowns(results: Iterable[UniverseResult]) -> pd.DataFrame:
@@ -192,6 +217,7 @@ def placebo_summary(results: Iterable[UniverseResult]) -> pd.DataFrame:
 class MetricsTables(NamedTuple):
     per_universe: pd.DataFrame  # one row per (system, universe_id)
     breakdowns: pd.DataFrame  # recall by group, per system
+    truths: pd.DataFrame  # one row per (system, universe_id, planted truth), TRUTH_COLUMNS
 
 
 def metrics_table(results: list[UniverseResult]) -> MetricsTables:
@@ -199,7 +225,7 @@ def metrics_table(results: list[UniverseResult]) -> MetricsTables:
     if len(keys) != len(set(keys)):
         raise ValueError("more than one result for the same (system, universe_id)")
     per_universe = pd.DataFrame([universe_row(r) for r in results])
-    return MetricsTables(per_universe, recall_breakdowns(results))
+    return MetricsTables(per_universe, recall_breakdowns(results), truth_rows(results))
 
 
 def _car_frame(values, column: str) -> pd.DataFrame:
