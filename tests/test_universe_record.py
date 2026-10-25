@@ -5,8 +5,13 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from evaluation.universe_record import UniverseRecord, find_clashes, plant_universe
-from universes.planted import PlantSpec
+from evaluation.universe_record import (
+    UniverseRecord,
+    find_clashes,
+    plant_universe,
+    recompute_injected,
+)
+from universes.planted import PlantSpec, make_planted
 
 H = 5
 DAYS = pd.bdate_range("2020-01-01", periods=40)
@@ -45,6 +50,11 @@ def events():
         ("e7", "A", 20, 1, 0),  # window 20-24, next to e8 (y, 25-29): no shared day
         ("e8", "A", 25, 0, 1),
     ]
+    return make_events(rows)
+
+
+def make_events(rows) -> pd.DataFrame:
+    """Eligible dividend events from (event_id, ticker, day position, x, y) rows."""
     return pd.DataFrame([
         {"event_id": e, "ticker": t, "first_tradeable_date": DAYS[d].date(), "x": x, "y": y,
          "event_type": "dividend", "is_new_announcement": True, "extraction_status": "passed"}
@@ -100,3 +110,39 @@ def test_dropped_targets_only_on_planted(prices, events):
     with pytest.raises(ValidationError):
         UniverseRecord(universe_id="p", universe_type="placebo", seed=0,
                        dropped_targets=record.dropped_targets)
+
+
+def test_injected_car_within_spec_overlap(prices):
+    events = make_events([
+        ("e1", "A", 0, 1, 0),  # window 0-4; e2's window shares days 2-4
+        ("e2", "A", 2, 1, 0),  # window 2-6
+        ("e3", "A", 20, 1, 0),  # alone
+        ("e4", "A", 38, 1, 0),  # window cut to 2 days by the end of the data: unmeasurable
+    ])
+    _, truth = make_planted(prices, events, SPECS[0], min_events=1)
+    daily = 0.02 / H
+    assert truth.unmeasurable_event_ids == ["e4"]
+    assert truth.injected_car == pytest.approx(
+        {"e1": 8 * daily, "e2": 8 * daily, "e3": 0.02, "e4": 2 * daily}
+    )
+    assert truth.injected_car["e1"] > SPECS[0].effect
+    assert truth.injected_car_mean == pytest.approx((8 * daily * 2 + 0.02) / 3)
+
+
+def test_recompute_injected_captures_cross_spec_effects(prices):
+    events = make_events([("e1", "A", 0, 1, 0), ("e2", "A", 2, 0, 1)])
+    short = SPECS[1].model_copy(update={"direction": -1, "effect": 0.01})
+    once, tx = make_planted(prices, events, SPECS[0], min_events=1)
+    twice, ty = make_planted(once, events, short, min_events=1)
+    assert tx.injected_car == pytest.approx({"e1": 0.02})  # its own spec only
+    tx, ty = recompute_injected(prices, twice, events, [tx, ty])
+    # e1's window (0-4) gets 3 of y's days; e2's (2-6) gets 3 of x's days.
+    assert tx.injected_car == pytest.approx({"e1": 0.02 - 3 * 0.01 / H})
+    assert ty.injected_car == pytest.approx({"e2": -0.01 + 3 * 0.02 / H})
+    assert ty.injected_car_mean == pytest.approx(ty.injected_car["e2"])
+
+
+def test_plant_universe_injected_car_matches_make_planted(prices, events):
+    _, record = plant_universe("u", prices, events, SPECS, min_events=1)
+    for truth in record.truths:
+        assert truth.injected_car == pytest.approx({e: 0.02 for e in truth.target_event_ids})

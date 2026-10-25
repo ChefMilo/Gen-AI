@@ -72,8 +72,10 @@ class Match(BaseModel):
     spec_id: str
     jaccard: float
     effect_car: float  # reported
-    true_effect: float  # direction * effect
+    true_effect: float  # mean injected_car over the finding's measurable targets
     effect_error: float  # effect_car - true_effect
+    nominal_effect: float  # direction * effect
+    nominal_effect_error: float  # effect_car - nominal_effect
 
 
 class FindingOutcome(BaseModel):
@@ -116,6 +118,19 @@ def _failed_tests(finding: Finding, truth: PlantTruth, jaccard_min: float):
     if not finding.passed_correction:
         failed.append("not_significant")
     return j, failed
+
+
+def injected_effect(finding: Finding, truth: PlantTruth) -> float:
+    """Mean injected_car over the finding's events that are measurable targets.
+
+    Falls back to direction * effect when the truth has no injected_car for them.
+    """
+    measurable = measurable_target_ids(truth)
+    values = [truth.injected_car[e] for e in set(finding.event_ids) & measurable
+              if e in truth.injected_car]
+    if not values:
+        return truth.spec.direction * truth.spec.effect
+    return sum(values) / len(values)
 
 
 def match_findings(
@@ -168,11 +183,13 @@ def match_findings(
         if i in finding_to_truth:
             k = finding_to_truth[i]
             spec = truths[k].spec
-            true_effect = spec.direction * spec.effect
+            nominal = spec.direction * spec.effect
+            true_effect = injected_effect(f, truths[k])
             matches.append(Match(
                 finding_id=f.finding_id, spec_id=spec.spec_id, jaccard=tests[i][k][0],
                 effect_car=f.effect_car, true_effect=true_effect,
-                effect_error=f.effect_car - true_effect,
+                effect_error=f.effect_car - true_effect, nominal_effect=nominal,
+                nominal_effect_error=f.effect_car - nominal,
             ))
             outcomes.append(FindingOutcome(
                 finding_id=f.finding_id, status="matched", significant=significant,

@@ -9,7 +9,9 @@ Definitions, per (system, universe):
   n_unmatched = significant findings that did not match (wrong sign, duplicates,
   no truth nearby), reported alongside;
 - false_discoveries: significant findings (placebo only; every one is false);
-- effect_error: reported effect_car - direction * effect, over matches.
+- effect_error: reported effect_car - the mean injected_car over the finding's
+  matched measurable targets (direction * effect if the truth has none), over
+  matches; nominal_effect_error: effect_car - direction * effect, alongside.
 """
 
 from collections.abc import Iterable, Mapping
@@ -58,14 +60,13 @@ def _ratio(num: float, den: float) -> float:
 
 
 def effect_errors(matches: list[Match]) -> dict[str, float]:
-    """Mean and mean absolute of effect_car - direction * effect; NaN with no matches."""
-    errors = np.array([m.effect_error for m in matches], dtype=float)
-    if not len(errors):
-        return {"effect_error_mean": float("nan"), "effect_error_mean_abs": float("nan")}
-    return {
-        "effect_error_mean": float(errors.mean()),
-        "effect_error_mean_abs": float(np.abs(errors).mean()),
-    }
+    """Mean and mean absolute effect_error and nominal_effect_error; NaN with no matches."""
+    out = {}
+    for name in ("effect_error", "nominal_effect_error"):
+        errors = np.array([getattr(m, name) for m in matches], dtype=float)
+        out[f"{name}_mean"] = float(errors.mean()) if len(errors) else float("nan")
+        out[f"{name}_mean_abs"] = float(np.abs(errors).mean()) if len(errors) else float("nan")
+    return out
 
 
 def precision(match: MatchResult) -> dict[str, float | int]:

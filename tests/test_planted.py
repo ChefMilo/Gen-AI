@@ -347,3 +347,31 @@ def test_default_grid_on_full_fake_universe(large_fake_events):
         ("single", "text"), ("conjunction", "text"),
     }
     assert {s.direction for s in specs} == {1, -1}
+
+
+def test_injected_car_equals_reference_car_change(prices, benchmarks, events):
+    # One overlap on this data, so both kinds of target are covered.
+    spec = PlantSpec(
+        spec_id="new_program", event_type="buyback", condition="is_new_program == True",
+        effect=0.01, holding_days=H, direction=-1, strength="weak", complexity="single",
+        feature_type="structured",
+    )
+    planted_prices, truth = make_planted(prices, events, spec, MIN_EVENTS)
+    overlapping = {e for o in truth.overlaps for e in o.event_ids}
+    assert overlapping
+    measurable = set(truth.target_event_ids) - set(truth.unmeasurable_event_ids)
+
+    for event_id, injected in truth.injected_car.items():
+        if event_id in overlapping:
+            assert abs(injected) > spec.effect
+        else:
+            assert injected == pytest.approx(-spec.effect, abs=1e-12)
+
+    # Zero-noise prices: a measurable target's reference CAR is exactly what was injected.
+    cars = event_cars(planted_prices, benchmarks,
+                      events[events["event_id"].isin(measurable)], H)
+    assert len(cars) == len(measurable)
+    np.testing.assert_allclose(
+        cars["car"], cars["event_id"].map(truth.injected_car), rtol=0, atol=1e-12
+    )
+    assert truth.injected_car_mean == pytest.approx(cars["car"].mean(), abs=1e-12)

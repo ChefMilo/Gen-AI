@@ -17,32 +17,37 @@ START, END = "2015-01-01", "2020-12-31"
 H = 5
 MIN_EVENTS = 20  # configs/default.yaml
 
-# Specs whose targets partly clash (same or nearby events on a ticker), so plant_universe
-# drops some, and with no overlaps within any one spec on this data (checked below):
-# every remaining target's reference CAR is then exactly direction * effect.
+# The two original specs plus rationale_undervalued_up200bp, which clashes with
+# new_program_down100bp on many targets (dropped by plant_universe) and keeps one
+# overlap within the spec on this data. Its overlapping targets carry part of each
+# other's effect, so their reference CAR differs from direction * effect but equals
+# injected_car.
 SPECS = [
     PlantSpec(spec_id="raise_up200bp", event_type="dividend",
               condition="dividend_change_pct > 10", effect=0.02, holding_days=H,
               direction=1, strength="moderate", complexity="single",
               feature_type="structured"),
-    PlantSpec(spec_id="framing_growth_small_down100bp", event_type="dividend",
-              condition='mcap_bucket == "small"',
-              text_feature=TextFeatureFilter(feature="dividend_framing",
-                                             equals=planted_text_label("dividend_framing")),
-              effect=0.01, holding_days=H, direction=-1, strength="weak",
-              complexity="conjunction", feature_type="text"),
-    PlantSpec(spec_id="new_program_small_down400bp", event_type="buyback",
-              condition='is_new_program == True and mcap_bucket == "small"', effect=0.04,
-              holding_days=H, direction=-1, strength="strong", complexity="conjunction",
-              feature_type="structured"),
+    PlantSpec(spec_id="new_program_down100bp", event_type="buyback",
+              condition="is_new_program == True", effect=0.01, holding_days=H,
+              direction=-1, strength="weak", complexity="single", feature_type="structured"),
+    PlantSpec(spec_id="rationale_undervalued_up200bp", event_type="buyback",
+              text_feature=TextFeatureFilter(feature="buyback_rationale",
+                                             equals=planted_text_label("buyback_rationale")),
+              effect=0.02, holding_days=H, direction=1, strength="moderate",
+              complexity="single", feature_type="text"),
 ]
 
 
 @pytest.fixture(scope="module")
-def universe():
+def data():
     benchmarks = make_synthetic_benchmarks(START, END, seed=0)
     prices = zero_noise(make_synthetic_prices(TICKERS, START, END, seed=0), benchmarks)
-    events = make_fake_events(prices, seed=0)
+    return prices, benchmarks, make_fake_events(prices, seed=0)
+
+
+@pytest.fixture(scope="module")
+def universe(data):
+    prices, benchmarks, events = data
     planted_prices, record = plant_universe("planted-0", prices, events, SPECS, MIN_EVENTS)
     return planted_prices, benchmarks, events, record
 
@@ -68,7 +73,7 @@ def test_perfect_findings_recover_every_truth(universe):
     planted_prices, benchmarks, events, record = universe
     assert [t.spec.spec_id for t in record.truths] == [s.spec_id for s in SPECS]
     assert record.dropped_targets  # the specs did clash
-    assert all(t.overlaps == [] for t in record.truths)
+    assert any(t.overlaps for t in record.truths)  # and one has a within-spec overlap
     findings = [perfect_finding(t, planted_prices, benchmarks, events) for t in record.truths]
     result = evaluate("R3", record, findings)
 
@@ -79,5 +84,20 @@ def test_perfect_findings_recover_every_truth(universe):
     assert row["recall"] == 1.0 and row["precision"] == 1.0 and row["n_unmatched"] == 0
     assert row["effect_error_mean"] == pytest.approx(0, abs=1e-9)
     assert row["effect_error_mean_abs"] == pytest.approx(0, abs=1e-9)
+    # Against direction * effect, the overlap shows up as an error.
+    assert row["nominal_effect_error_mean_abs"] > 1e-6
     overall = tables.breakdowns.query("group == 'overall'").iloc[0]
     assert overall["recall"] == 1.0
+
+
+def test_perfect_finding_on_new_program_alone(data):
+    """new_program_down100bp keeps its own within-spec overlap only when planted alone."""
+    prices, benchmarks, events = data
+    planted_prices, record = plant_universe("planted-1", prices, events, SPECS[1:2],
+                                            MIN_EVENTS)
+    truth = record.truths[0]
+    assert truth.overlaps
+    finding = perfect_finding(truth, planted_prices, benchmarks, events)
+    match = evaluate("R3", record, [finding]).match.matches[0]
+    assert match.effect_error == pytest.approx(0, abs=1e-9)
+    assert abs(match.nominal_effect_error) > 1e-6

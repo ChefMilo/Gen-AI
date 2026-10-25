@@ -60,10 +60,25 @@ def test_effect_error_arithmetic(results):
     e = effect_errors(match.matches)
     assert e["effect_error_mean"] == pytest.approx((0.01 + 0.003) / 2)
     assert e["effect_error_mean_abs"] == pytest.approx((0.01 + 0.003) / 2)
+    # Hand-built truths have no injected_car, so both errors use direction * effect.
+    assert e["nominal_effect_error_mean"] == pytest.approx(e["effect_error_mean"])
     neg = evaluate("R3", planted_record("u", [truth()]), [finding(effect_car=0.015)], J)
-    assert effect_errors(neg.match.matches) == pytest.approx(
-        {"effect_error_mean": -0.005, "effect_error_mean_abs": 0.005}
-    )
+    assert effect_errors(neg.match.matches) == pytest.approx({
+        "effect_error_mean": -0.005, "effect_error_mean_abs": 0.005,
+        "nominal_effect_error_mean": -0.005, "nominal_effect_error_mean_abs": 0.005,
+    })
+
+
+def test_effect_error_uses_injected_car_of_matched_measurable_targets():
+    # e0, e1 overlap (0.03 each); e9 is unmeasurable; x0 is not a target.
+    injected = {f"e{i}": 0.02 for i in range(10)} | {"e0": 0.03, "e1": 0.03, "e9": 0.5}
+    t = truth(unmeasurable=["e9"]).model_copy(update={"injected_car": injected})
+    f = finding(event_ids=ids("e", 10) + ["x0"], effect_car=0.025)
+    m = evaluate("R3", planted_record("u", [t]), [f], J).match.matches[0]
+    true_effect = (0.03 * 2 + 0.02 * 7) / 9
+    assert m.true_effect == pytest.approx(true_effect)
+    assert m.effect_error == pytest.approx(0.025 - true_effect)
+    assert (m.nominal_effect, m.nominal_effect_error) == pytest.approx((0.02, 0.005))
 
 
 def test_effect_errors_without_matches_are_nan():

@@ -7,6 +7,10 @@ targets would carry both effects. plant_universe drops every target in such a cl
 from its spec before planting (on_clash="drop", recorded in dropped_targets) or
 raises (on_clash="raise"). Overlaps within one spec are allowed and are listed in
 that truth's overlaps, as make_planted does.
+
+After planting, each truth's injected_car is recomputed from the final prices minus
+the original ones (recompute_injected), so it holds every effect that reached a
+target's window, from any spec.
 """
 
 from typing import Literal
@@ -16,7 +20,14 @@ import pandas as pd
 from pydantic import BaseModel, model_validator
 
 from universes.placebo import PlaceboInfo
-from universes.planted import PlantSpec, PlantTruth, make_planted, select_targets
+from universes.planted import (
+    PlantSpec,
+    PlantTruth,
+    injected_cars,
+    make_planted,
+    select_targets,
+    window_positions,
+)
 
 UniverseType = Literal["planted", "placebo", "real"]
 OnClash = Literal["drop", "raise"]
@@ -145,6 +156,29 @@ def find_clashes(
     ]
 
 
+def recompute_injected(
+    original: pd.DataFrame, final: pd.DataFrame, events: pd.DataFrame,
+    truths: list[PlantTruth],
+) -> list[PlantTruth]:
+    """truths with injected_car from final["ret"] - original["ret"] over each target's window.
+
+    original and final must have the same rows in the same order (make_planted keeps them).
+    """
+    if not original.index.equals(final.index):
+        raise ValueError("original and final prices must have the same rows in the same order")
+    original_ret = original["ret"].to_numpy(dtype=float)
+    final_ret = final["ret"].to_numpy(dtype=float)
+    out = []
+    for truth in truths:
+        targets = events[events["event_id"].isin(truth.target_event_ids)]
+        windows = window_positions(original, targets, truth.spec.holding_days)
+        injected, mean = injected_cars(original_ret, final_ret, windows,
+                                       measurable_target_ids(truth))
+        out.append(truth.model_copy(update={"injected_car": injected,
+                                            "injected_car_mean": mean}))
+    return out
+
+
 def plant_universe(
     universe_id: str,
     prices: pd.DataFrame,
@@ -164,9 +198,11 @@ def plant_universe(
         listed = ", ".join(f"{d.spec_id}:{d.event_id}" for d in dropped)
         raise ValueError(f"targets of different specs share window days: {listed}")
     truths = []
+    planted = prices
     for spec in specs:
         drop_ids = {d.event_id for d in dropped if d.spec_id == spec.spec_id}
         spec_events = events[~events["event_id"].isin(drop_ids)]
-        prices, truth = make_planted(prices, spec_events, spec, min_events)
+        planted, truth = make_planted(planted, spec_events, spec, min_events)
         truths.append(truth)
-    return prices, planted_record(universe_id, truths, seed, dropped)
+    truths = recompute_injected(prices, planted, events, truths)
+    return planted, planted_record(universe_id, truths, seed, dropped)
