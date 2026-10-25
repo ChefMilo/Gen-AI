@@ -1,0 +1,251 @@
+"""Discovery, generalisation and efficiency metrics (docs/design.md section 3, "Metrics").
+
+evaluate() scores one system's findings on one universe; metrics_table() turns a list
+of those results into one row per (system, universe_id) plus the recall breakdowns.
+
+Definitions, per (system, universe):
+- recall: matched truths / truths (planted only);
+- precision: matched findings / significant findings (planted only), with
+  n_unmatched = significant findings that did not match (wrong sign, duplicates,
+  no truth nearby), reported alongside;
+- false_discoveries: significant findings (placebo only; every one is false);
+- effect_error: reported effect_car - direction * effect, over matches.
+"""
+
+from collections.abc import Iterable, Mapping
+from typing import Any, NamedTuple
+
+import numpy as np
+import pandas as pd
+from pydantic import BaseModel
+
+from agent.finding import Finding
+from evaluation.matching import Match, MatchResult, match_findings, sign
+from evaluation.universe_record import UniverseRecord
+
+GROUPS = ["overall", "strength", "complexity", "feature_type", "event_type", "direction"]
+EFFICIENCY_FIELDS = ["backtests_used", "tool_calls", "tokens", "cost_usd"]
+
+
+class UniverseResult(BaseModel):
+    """One system's findings on one universe, scored."""
+
+    system: str
+    record: UniverseRecord
+    findings: list[Finding]
+    match: MatchResult
+    metadata: dict[str, Any] = {}  # session metadata, e.g. tool_calls, tokens, cost_usd
+
+
+def evaluate(
+    system: str,
+    record: UniverseRecord,
+    findings: list[Finding],
+    jaccard_min: float | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> UniverseResult:
+    return UniverseResult(
+        system=system,
+        record=record,
+        findings=findings,
+        match=match_findings(findings, record, jaccard_min),
+        metadata=dict(metadata or {}),
+    )
+
+
+def _ratio(num: float, den: float) -> float:
+    return num / den if den else float("nan")
+
+
+def effect_errors(matches: list[Match]) -> dict[str, float]:
+    """Mean and mean absolute of effect_car - direction * effect; NaN with no matches."""
+    errors = np.array([m.effect_error for m in matches], dtype=float)
+    if not len(errors):
+        return {"effect_error_mean": float("nan"), "effect_error_mean_abs": float("nan")}
+    return {
+        "effect_error_mean": float(errors.mean()),
+        "effect_error_mean_abs": float(np.abs(errors).mean()),
+    }
+
+
+def precision(match: MatchResult) -> dict[str, float | int]:
+    """Matched / significant findings, and the significant findings left unmatched."""
+    n_significant = match.n_significant
+    n_matched = len(match.matches)
+    return {
+        "precision": _ratio(n_matched, n_significant),
+        "n_unmatched": n_significant - n_matched,
+    }
+
+
+def efficiency(findings: list[Finding], metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """EFFICIENCY_FIELDS found in the session metadata, else on the findings.
+
+    Fields that are absent are left out. On findings, a field is read as a
+    session-level value: the first one that is not None.
+    """
+    out = {}
+    for field in EFFICIENCY_FIELDS:
+        value = metadata.get(field)
+        if value is None:
+            value = next(
+                (v for f in findings if (v := getattr(f, field, None)) is not None), None
+            )
+        if value is not None:
+            out[field] = value
+    return out
+
+
+def universe_row(result: UniverseResult) -> dict[str, Any]:
+    match = result.match
+    planted = match.universe_type == "planted"
+    nan = float("nan")
+    row = {
+        "system": result.system,
+        "universe_id": match.universe_id,
+        "universe_type": match.universe_type,
+        "seed": result.record.seed,
+        "n_findings": len(match.outcomes),
+        "n_significant": match.n_significant,
+        "n_truths": match.n_truths,
+        "n_matched": len(match.matches),
+        "recall": _ratio(len(match.matches), match.n_truths) if planted else nan,
+        "precision": nan,
+        "n_unmatched": nan,
+        "n_near_miss": len(match.with_status("near_miss")),
+        "n_duplicate": len(match.with_status("duplicate")),
+        "false_discoveries": (
+            len(match.with_status("false_discovery"))
+            if match.universe_type == "placebo" else nan
+        ),
+        **effect_errors(match.matches),
+    }
+    if planted:
+        row.update(precision(match))
+    row.update(efficiency(result.findings, result.metadata))
+    return row
+
+
+def _truth_labels(truth) -> dict[str, str]:
+    spec = truth.spec
+    return {
+        "overall": "all",
+        "strength": spec.strength,
+        "complexity": spec.complexity,
+        "feature_type": spec.feature_type,
+        "event_type": spec.event_type,
+        "direction": "up" if spec.direction > 0 else "down",
+    }
+
+
+def recall_breakdowns(results: Iterable[UniverseResult]) -> pd.DataFrame:
+    """Planted recall per system, pooled over universes, overall and by each of GROUPS."""
+    rows = []
+    for result in results:
+        if result.match.universe_type != "planted":
+            continue
+        matched = {m.spec_id for m in result.match.matches}
+        for truth in result.record.truths:
+            labels = _truth_labels(truth)
+            for group in GROUPS:
+                rows.append({
+                    "system": result.system, "group": group, "value": labels[group],
+                    "matched": truth.spec.spec_id in matched,
+                })
+    columns = ["system", "group", "value", "n_truths", "n_matched", "recall"]
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    df = pd.DataFrame(rows)
+    out = (
+        df.groupby(["system", "group", "value"], sort=False)["matched"]
+        .agg(n_truths="size", n_matched="sum")
+        .reset_index()
+    )
+    out["n_matched"] = out["n_matched"].astype(int)
+    out["recall"] = out["n_matched"] / out["n_truths"]
+    return out[columns]
+
+
+def placebo_summary(results: Iterable[UniverseResult]) -> pd.DataFrame:
+    """Per system: placebo universes, share with >= 1 false discovery, mean count."""
+    rows = [
+        {"system": r.system, "false_discoveries": len(r.match.with_status("false_discovery"))}
+        for r in results
+        if r.match.universe_type == "placebo"
+    ]
+    columns = ["system", "n_universes", "share_with_false_discovery", "mean_false_discoveries"]
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    df = pd.DataFrame(rows)
+    return (
+        df.groupby("system", sort=False)["false_discoveries"]
+        .agg(
+            n_universes="size",
+            share_with_false_discovery=lambda s: float((s >= 1).mean()),
+            mean_false_discoveries="mean",
+        )
+        .reset_index()[columns]
+    )
+
+
+class MetricsTables(NamedTuple):
+    per_universe: pd.DataFrame  # one row per (system, universe_id)
+    breakdowns: pd.DataFrame  # recall by group, per system
+
+
+def metrics_table(results: list[UniverseResult]) -> MetricsTables:
+    keys = [(r.system, r.match.universe_id) for r in results]
+    if len(keys) != len(set(keys)):
+        raise ValueError("more than one result for the same (system, universe_id)")
+    per_universe = pd.DataFrame([universe_row(r) for r in results])
+    return MetricsTables(per_universe, recall_breakdowns(results))
+
+
+def _car_frame(values, column: str) -> pd.DataFrame:
+    """finding_id -> CAR from Findings, dicts, a {finding_id: car} mapping or a DataFrame.
+
+    Dicts and DataFrames give the CAR as effect_car or car.
+    """
+    if isinstance(values, pd.DataFrame):
+        df = values
+    elif isinstance(values, Mapping):
+        df = pd.DataFrame({"finding_id": list(values), "effect_car": list(values.values())})
+    else:
+        df = pd.DataFrame(
+            [v.model_dump(include={"finding_id", "effect_car"}) if isinstance(v, BaseModel)
+             else dict(v) for v in values]
+        )
+    if df.empty:
+        return pd.DataFrame(columns=["finding_id", column])
+    car = "effect_car" if "effect_car" in df.columns else "car"
+    return df[["finding_id", car]].rename(columns={car: column})
+
+
+def retention(in_sample_findings, holdout_results) -> pd.DataFrame:
+    """Per in-sample finding: in-sample and holdout CAR, sign agreement, holdout/in-sample.
+
+    holdout_car is NaN for a finding with no holdout result; sign_agree is then NaN
+    too. ratio is NaN when the in-sample CAR is zero.
+    """
+    df = _car_frame(in_sample_findings, "in_sample_car").merge(
+        _car_frame(holdout_results, "holdout_car"), on="finding_id", how="left"
+    )
+    ins = df["in_sample_car"].astype(float)
+    out = df["holdout_car"].astype(float)
+    df["in_sample_car"], df["holdout_car"] = ins, out
+    agree = [sign(a) == sign(b) for a, b in zip(ins, out, strict=True)]
+    df["sign_agree"] = pd.Series(agree, index=df.index, dtype=float).where(out.notna())
+    df["ratio"] = (out / ins.where(ins != 0)).astype(float)
+    return df
+
+
+def retention_summary(table: pd.DataFrame) -> dict[str, float | int]:
+    """Over findings with a holdout result: share agreeing in sign, mean and median ratio."""
+    scored = table[table["holdout_car"].notna()]
+    return {
+        "n_findings": len(table),
+        "n_with_holdout": len(scored),
+        "sign_agreement": float(scored["sign_agree"].mean()) if len(scored) else float("nan"),
+        "mean_ratio": float(scored["ratio"].mean()) if len(scored) else float("nan"),
+        "median_ratio": float(scored["ratio"].median()) if len(scored) else float("nan"),
+    }
