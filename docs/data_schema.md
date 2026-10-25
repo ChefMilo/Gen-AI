@@ -47,7 +47,9 @@ All data lives in the shared Drive folder Gen AI/Data/. Filings and prices are r
 | accession_no                                           | text        | unique SEC filing ID, the join key to the event store                 |
 | form_type                                              | 8-K / 8-K/A |                                                                       |
 | filing_date, year                                      | date, int   |                                                                       |
-| acceptance_datetime_raw                                | text        | SEC acceptance timestamp (converted to US Eastern in the event store) |
+| acceptance_datetime_et                                 | text        | **use this**: SEC "Accepted" time, US Eastern (YYYY-MM-DD HH:MM:SS)   |
+| acceptance_source                                      | text        | sec_page (from the SEC index page) or raw_utc (fallback)              |
+| acceptance_datetime_raw                                | text        | SEC JSON timestamp; **do not use**: about 1 in 3 is shifted 4-5 hours |
 | items                                                  | text        | 8-K items, e.g. 2.02,9.01                                             |
 | source_url                                             | text        | filing folder on SEC                                                  |
 | docs, n_ex99                                           | text, int   | documents downloaded: main 8-K + exhibit 99 press releases            |
