@@ -13,6 +13,10 @@ def pytest_configure(config):
 
 
 @pytest.fixture(scope="session")
-def large_fake_events():
-    prices = make_synthetic_prices(LARGE_TICKERS, LARGE_START, LARGE_END, seed=0)
-    return make_fake_events(prices, seed=0)
+def large_fake_prices():
+    return make_synthetic_prices(LARGE_TICKERS, LARGE_START, LARGE_END, seed=0)
+
+
+@pytest.fixture(scope="session")
+def large_fake_events(large_fake_prices):
+    return make_fake_events(large_fake_prices, seed=0)

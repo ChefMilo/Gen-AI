@@ -25,6 +25,17 @@ DEFAULT_HOLDING_DAYS = 5
 STRENGTHS = {0.005: "very_weak", 0.01: "weak", 0.02: "moderate", 0.04: "strong"}
 GRID_DIRECTIONS = {0.005: 1, 0.01: -1, 0.02: 1, 0.04: -1}
 
+# Text feature -> the label the text plants target, by name (never by position in the
+# label tuples, which may be reordered when Retrieval's final labels land).
+FEATURE_LABELS = {
+    "dividend_framing": DIVIDEND_FRAMING_LABELS,
+    "buyback_rationale": BUYBACK_RATIONALE_LABELS,
+}
+PLANTED_TEXT_LABELS = {
+    "dividend_framing": "fake_growth",
+    "buyback_rationale": "fake_undervalued",
+}
+
 Strength = Literal["very_weak", "weak", "moderate", "strong"]
 Complexity = Literal["single", "conjunction"]
 FeatureType = Literal["structured", "text"]
@@ -172,12 +183,20 @@ def buyback_size_threshold(events: pd.DataFrame) -> float | None:
     return round_sig(float(values.quantile(0.75))) if len(values) else None
 
 
+def planted_text_label(feature: str) -> str:
+    """The label text plants target for feature; raises if it is not an allowed label."""
+    label = PLANTED_TEXT_LABELS[feature]
+    if label not in FEATURE_LABELS[feature]:
+        raise ValueError(f"{feature}: planted label {label!r} not in {FEATURE_LABELS[feature]}")
+    return label
+
+
 def _base_specs(
     events: pd.DataFrame,
 ) -> list[tuple[str, EventType, str | None, TextFeatureFilter | None, FeatureType]]:
     """(name, event_type, condition, text feature, feature type) for single-feature plants."""
-    framing = DIVIDEND_FRAMING_LABELS[1]  # fake_growth
-    rationale = BUYBACK_RATIONALE_LABELS[0]  # fake_undervalued
+    framing = planted_text_label("dividend_framing")
+    rationale = planted_text_label("buyback_rationale")
     threshold = buyback_size_threshold(events)
     # No eligible buybacks: the condition can match nothing, so the spec is dropped.
     large = f"buyback_pct_mcap > {'inf' if threshold is None else f'{threshold:g}'}"
