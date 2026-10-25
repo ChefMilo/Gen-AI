@@ -2,7 +2,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import universes.planted as planted_module
 from evaluation.reference_car import CAR_COLUMNS, event_cars, summary
+from universe_helpers import zero_noise
 from universes.fake_events import make_fake_events
 from universes.planted import (
     GRID_DIRECTIONS,
@@ -34,15 +36,6 @@ SPEC = PlantSpec(
     complexity="single",
     feature_type="structured",
 )
-
-
-def zero_noise(prices, benchmarks):
-    """Every stock's ret equals SPY's, so the reference AR is zero before planting."""
-    spy = benchmarks[benchmarks["ticker"] == "SPY"].set_index("date")["ret"]
-    out = prices.assign(ret=prices["date"].map(spy).to_numpy()).sort_values(["ticker", "date"])
-    growth = (1 + out["ret"].fillna(0)).groupby(out["ticker"]).cumprod()
-    first = out.groupby("ticker")["adj_close"].transform("first")
-    return out.assign(adj_close=first * growth).sort_index()
 
 
 @pytest.fixture(scope="module")
@@ -182,6 +175,22 @@ def test_text_feature_spec(prices, events):
     assert len(targets) > 0
     labels = targets["text_features"].map(lambda tf: tf["dividend_framing"]["label"])
     assert (labels == "fake_growth").all()
+
+
+def test_text_labels_chosen_by_name_not_position(events, monkeypatch):
+    def targeted():
+        return {s.spec_id: list(select_targets(events, s)["event_id"])
+                for s in candidate_specs(events) if s.feature_type == "text"}
+
+    before = targeted()
+    assert all(before.values())
+    reordered = {f: tuple(reversed(labels)) for f, labels in planted_module.FEATURE_LABELS.items()}
+    monkeypatch.setattr(planted_module, "FEATURE_LABELS", reordered)
+    assert targeted() == before
+
+    monkeypatch.setitem(planted_module.PLANTED_TEXT_LABELS, "dividend_framing", "growth")
+    with pytest.raises(ValueError, match="not in"):
+        candidate_specs(events)
 
 
 def test_deterministic(planted, prices, events):
