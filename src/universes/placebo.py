@@ -39,7 +39,6 @@ from pydantic import BaseModel
 
 from store import prices as store_prices
 from universes.fake_events import MARKET_CLOSE
-from universes.fake_events import first_tradeable_date as local_first_tradeable_date
 from universes.planted import DEFAULT_HOLDING_DAYS, eligible
 
 DEFAULT_MIN_GAP_DAYS = 10
@@ -131,11 +130,12 @@ def _shift_dates(
 
 
 def first_tradeable_date(acceptance_et: datetime, calendar: list[date]) -> date:
-    """store.prices.first_tradeable_date if implemented, else the data_schema.md rule."""
-    try:
-        return store_prices.first_tradeable_date(acceptance_et)
-    except NotImplementedError:
-        return local_first_tradeable_date(acceptance_et, calendar)
+    """store.prices.first_tradeable_date on this universe's own calendar.
+
+    The calendar is passed so synthetic universes don't need $GENAI_DATA_DIR or the real
+    NYSE calendar.
+    """
+    return store_prices.first_tradeable_date(acceptance_et, calendar)
 
 
 def _acceptance_on(new_day: date, original: datetime, calendar: list[date]) -> datetime:
