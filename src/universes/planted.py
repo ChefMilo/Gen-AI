@@ -5,8 +5,10 @@ and/or a text feature) and an effect. make_planted adds direction * effect /
 holding_days to `ret` on each of the holding_days trading days starting at the
 event's first_tradeable_date, then rebuilds adj_close from the modified ret. Under
 the reference event study (evaluation.reference_car), each target's CAR rises by
-direction * effect, and nothing else moves. The truth records which events were
-planted, for matching findings against planted signals.
+direction * effect and nothing else moves, except where two targets' windows overlap:
+each then also carries part of the other's effect. The truth records which events
+were planted, for matching findings against planted signals, and the CAR actually
+injected into each target's own window (injected_car), overlaps included.
 
 Only `ret` and `adj_close` change. close, OHLC, raw_close and mcap are left as they
 were, so the events (whose mcap fields come from the prices) stay valid.
@@ -80,6 +82,44 @@ class PlantTruth(BaseModel):
     # Targets the reference event study cannot measure (window past the data or on a
     # bad price day). They are still planted and still count as targets.
     unmeasurable_event_ids: list[str]
+    # Target event_id -> planted AR summed over its own holding window, including any
+    # part from an overlapping target: direction * effect when nothing overlaps. Targets
+    # with no prices row on day 0 have no window and are left out.
+    injected_car: dict[str, float] = {}
+    injected_car_mean: float | None = None  # over measurable targets; None if there are none
+
+
+def injected_cars(
+    original_ret: np.ndarray,
+    planted_ret: np.ndarray,
+    windows: dict[str, np.ndarray],
+    measurable: set[str],
+) -> tuple[dict[str, float], float | None]:
+    """(event_id -> sum of planted_ret - original_ret over its window, mean over measurable)."""
+    added = np.asarray(planted_ret, dtype=float) - np.asarray(original_ret, dtype=float)
+    added = np.nan_to_num(added, nan=0.0)  # a NaN ret stays NaN when planted: nothing added
+    injected = {event_id: float(added[rows].sum()) for event_id, rows in windows.items()}
+    values = [injected[e] for e in injected if e in measurable]
+    return injected, (float(np.mean(values)) if values else None)
+
+
+def window_positions(
+    prices: pd.DataFrame, targets: pd.DataFrame, holding_days: int
+) -> dict[str, np.ndarray]:
+    """event_id -> positional rows of prices in its holding window, cut short at the end
+    of the data. Events with no prices row on day 0 are left out, as in make_planted."""
+    dates = pd.to_datetime(prices["date"]).dt.normalize().to_numpy()
+    ticker_rows = prices.groupby("ticker", sort=False).indices
+    day0s = pd.to_datetime(targets["first_tradeable_date"]).dt.normalize().to_numpy()
+    out = {}
+    for event_id, ticker, day0 in zip(targets["event_id"], targets["ticker"], day0s,
+                                      strict=True):
+        rows = ticker_rows.get(ticker, np.array([], dtype=int))
+        rows = rows[np.argsort(dates[rows], kind="stable")]
+        pos = int(np.searchsorted(dates[rows], day0))
+        if pos < len(rows) and dates[rows[pos]] == day0:
+            out[event_id] = rows[pos : pos + holding_days]
+    return out
 
 
 def eligible(events: pd.DataFrame) -> pd.DataFrame:
@@ -117,6 +157,7 @@ def make_planted(
     daily = spec.direction * spec.effect / spec.holding_days
 
     overlaps, unmeasurable = [], []
+    target_windows: dict[str, np.ndarray] = {}
     day0s = pd.to_datetime(targets["first_tradeable_date"]).dt.normalize()
     target_days = pd.DataFrame(
         {"event_id": targets["event_id"], "ticker": targets["ticker"], "day0": day0s}
@@ -133,6 +174,7 @@ def make_planted(
                 continue
             window = rows[pos : pos + spec.holding_days]
             ret[window] += daily
+            target_windows[event_id] = window
             if len(window) < spec.holding_days or is_bad[window].any():
                 unmeasurable.append(event_id)
             windows.append((event_id, pos, pos + len(window)))
@@ -156,12 +198,18 @@ def make_planted(
 
     planted["ret"] = ret
     planted["adj_close"] = adj_close
+    injected, injected_mean = injected_cars(
+        prices["ret"].to_numpy(dtype=float), ret, target_windows,
+        set(targets["event_id"]) - set(unmeasurable),
+    )
     truth = PlantTruth(
         spec=spec,
         target_event_ids=list(targets["event_id"]),
         n_targets=len(targets),
         overlaps=overlaps,
         unmeasurable_event_ids=unmeasurable,
+        injected_car=injected,
+        injected_car_mean=injected_mean,
     )
     return planted, truth
 
