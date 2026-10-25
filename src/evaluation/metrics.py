@@ -10,9 +10,11 @@ Definitions, per (system, universe):
   n_unmatched = significant findings that did not match (wrong sign, duplicates,
   no truth nearby), reported alongside;
 - false_discoveries: significant findings (placebo only; every one is false);
-- effect_error: reported effect_car - the mean injected_car over the finding's
-  matched measurable targets (direction * effect if the truth has none), over
-  matches; nominal_effect_error: effect_car - direction * effect, alongside.
+- effect_error: reported effect_car - true_effect, over matches. true_effect is the
+  mean injected_car over the finding's matched measurable targets (direction *
+  effect if the truth has none) plus, when the truth has a baseline, their mean
+  baseline_car (the CAR they had before planting); nominal_effect_error:
+  effect_car - direction * effect, alongside.
   effect_error_sum and effect_error_abs_sum (0 with no matches) let statistics pool
   the error over all matches rather than average per-universe means.
 """
@@ -144,11 +146,12 @@ def _truth_labels(truth) -> dict[str, str]:
     }
 
 
-TRUTH_COLUMNS = ["system", "universe_id", "spec_id", *GROUPS[1:], "matched"]
+TRUTH_COLUMNS = ["system", "universe_id", "spec_id", *GROUPS[1:], "snr", "matched"]
 
 
 def truth_rows(results: Iterable[UniverseResult]) -> pd.DataFrame:
-    """One row per (system, universe_id, planted truth): its group labels and matched."""
+    """One row per (system, universe_id, planted truth): group labels, snr (NaN if
+    unknown) and matched."""
     rows = []
     for result in results:
         if result.match.universe_type != "planted":
@@ -159,6 +162,7 @@ def truth_rows(results: Iterable[UniverseResult]) -> pd.DataFrame:
             rows.append({
                 "system": result.system, "universe_id": result.match.universe_id,
                 "spec_id": truth.spec.spec_id, **{g: labels[g] for g in GROUPS[1:]},
+                "snr": float("nan") if truth.snr is None else truth.snr,
                 "matched": truth.spec.spec_id in matched,
             })
     return pd.DataFrame(rows, columns=TRUTH_COLUMNS)

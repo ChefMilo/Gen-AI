@@ -101,3 +101,19 @@ def test_perfect_finding_on_new_program_alone(data):
     match = evaluate("R3", record, [finding]).match.matches[0]
     assert match.effect_error == pytest.approx(0, abs=1e-9)
     assert abs(match.nominal_effect_error) > 1e-6
+
+
+def test_perfect_findings_on_noisy_prices_have_zero_effect_error(data):
+    """With baseline_car, the unplanted CAR of the targets no longer counts as error."""
+    _, benchmarks, events = data
+    noisy = make_synthetic_prices(TICKERS, START, END, seed=0)
+    planted_prices, record = plant_universe("planted-2", noisy, events, SPECS, MIN_EVENTS,
+                                            benchmarks=benchmarks)
+    findings = [perfect_finding(t, planted_prices, benchmarks, events) for t in record.truths]
+    result = evaluate("R3", record, findings)
+    assert len(result.match.matches) == len(SPECS)
+    for m in result.match.matches:
+        assert m.effect_error == pytest.approx(0, abs=1e-12)
+        assert abs(m.effect_car - m.injected_effect) > 1e-6  # the baseline it now removes
+    truths = metrics_table([result]).truths
+    assert truths["snr"].notna().all() and (truths["snr"] > 0).all()

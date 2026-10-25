@@ -8,6 +8,7 @@ holdout_start: null  # TODO: agree the research/holdout split
 
 backtest_budget: 30  # backtests per research session
 min_events: 20  # minimum events per signal
+plant_min_events: 50  # minimum targets per planted spec (default_spec_grid, plant_universe)
 jaccard_min: 0.6  # finding vs planted event set overlap to count as recovered
 alpha: 0.05  # significance level after correction
 seed: 0

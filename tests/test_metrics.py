@@ -81,6 +81,32 @@ def test_effect_error_uses_injected_car_of_matched_measurable_targets():
     assert (m.nominal_effect, m.nominal_effect_error) == pytest.approx((0.02, 0.005))
 
 
+def test_true_effect_adds_baseline_of_matched_measurable_targets():
+    injected = {f"e{i}": 0.02 for i in range(10)} | {"e0": 0.03}
+    baseline = {f"e{i}": 0.001 * i for i in range(9)}  # e9 unmeasurable: no baseline
+    t = truth(unmeasurable=["e9"]).model_copy(update={
+        "injected_car": injected, "baseline_car": baseline, "baseline_car_mean": 0.004,
+    })
+    f = finding(event_ids=ids("e", 4) + ["x0"], effect_car=0.03)
+    m = evaluate("R3", planted_record("u", [t]), [f], 0.4).match.matches[0]
+    assert m.injected_effect == pytest.approx((0.03 + 0.02 * 3) / 4)
+    assert m.baseline_effect == pytest.approx((0 + 0.001 + 0.002 + 0.003) / 4)
+    assert m.true_effect == pytest.approx(m.injected_effect + m.baseline_effect)
+    assert m.effect_error == pytest.approx(0.03 - m.true_effect)
+    assert m.nominal_effect_error == pytest.approx(0.03 - 0.02)
+    # No baseline: true_effect is the injected effect alone.
+    plain = evaluate("R3", planted_record("u", [t.model_copy(update={"baseline_car": None})]),
+                     [f], 0.4).match.matches[0]
+    assert plain.baseline_effect is None and plain.true_effect == plain.injected_effect
+
+
+def test_baseline_effect_falls_back_to_mean():
+    t = truth().model_copy(update={"baseline_car": {}, "baseline_car_mean": 0.004})
+    m = evaluate("R3", planted_record("u", [t]), [finding(effect_car=0.03)], J).match.matches[0]
+    assert m.baseline_effect == 0.004
+    assert m.true_effect == pytest.approx(0.02 + 0.004)
+
+
 def test_effect_errors_without_matches_are_nan():
     assert all(math.isnan(v) for v in effect_errors([]).values())
 
@@ -194,3 +220,11 @@ def test_pooling_columns_and_truth_rows(results):
     r3 = truths[truths["system"] == "R3"].set_index("spec_id")
     assert r3["matched"].to_dict() == {"a": True, "b": True, "c": False, "d": False}
     assert r3.loc["c", "feature_type"] == "text" and r3.loc["b", "direction"] == "down"
+    assert r3["snr"].isna().all()  # hand-built truths have no baseline
+
+
+def test_truth_rows_carry_snr():
+    record = planted_record("u", [truth("a").model_copy(update={"snr": 2.5}), truth("b")])
+    truths = metrics_table([evaluate("R3", record, [], J)]).truths
+    assert truths.set_index("spec_id")["snr"].to_dict() == pytest.approx(
+        {"a": 2.5, "b": math.nan}, nan_ok=True)

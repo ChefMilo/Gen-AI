@@ -12,11 +12,13 @@ from universes.planted import (
     PlantSpec,
     buyback_size_threshold,
     candidate_specs,
+    default_plant_min_events,
     default_spec_grid,
     eligible,
     make_planted,
     round_sig,
     select_targets,
+    spillover_ids,
 )
 from universes.synthetic import make_synthetic_benchmarks, make_synthetic_prices
 
@@ -375,3 +377,69 @@ def test_injected_car_equals_reference_car_change(prices, benchmarks, events):
         cars["car"], cars["event_id"].map(truth.injected_car), rtol=0, atol=1e-12
     )
     assert truth.injected_car_mean == pytest.approx(cars["car"].mean(), abs=1e-12)
+
+
+def test_strength_grid_and_spec_ids(events):
+    assert STRENGTHS == {0.0025: "very_weak", 0.005: "weak", 0.01: "moderate",
+                         0.02: "strong"}
+    assert GRID_DIRECTIONS == {0.0025: 1, 0.005: -1, 0.01: 1, 0.02: -1}
+    ids = {s.spec_id for s in candidate_specs(events)}
+    assert {i for i in ids if i.startswith("dividend_raise_") and "small" not in i} == {
+        "dividend_raise_up25bp", "dividend_raise_down50bp", "dividend_raise_up100bp",
+        "dividend_raise_down200bp",
+    }
+    assert "buyback_new_program_small_down200bp" in ids
+
+
+def test_grid_min_events_defaults_to_plant_min_events(events):
+    assert default_plant_min_events() == 50
+    assert default_spec_grid(events) == default_spec_grid(events, 50)
+    _, dropped = default_spec_grid(events)
+    assert all(d.n_targets < 50 for d in dropped)
+
+
+def test_no_baseline_without_benchmarks(planted):
+    _, truth = planted
+    assert truth.baseline_car is None and truth.baseline_car_mean is None
+    assert truth.baseline_car_std is None and truth.snr is None
+
+
+def test_baseline_and_snr_from_unplanted_prices(benchmarks, events):
+    noisy = make_synthetic_prices(TICKERS, START, END, seed=0)  # nonzero ARs
+    planted_prices, truth = make_planted(noisy, events, SPEC, MIN_EVENTS, benchmarks)
+    measurable = set(truth.target_event_ids) - set(truth.unmeasurable_event_ids)
+    cars = event_cars(noisy, benchmarks, events[events["event_id"].isin(measurable)], H)
+    assert truth.baseline_car == pytest.approx(dict(zip(cars["event_id"], cars["car"],
+                                                        strict=True)), abs=0)
+    assert truth.baseline_car_mean == pytest.approx(cars["car"].mean())
+    assert truth.baseline_car_std == pytest.approx(cars["car"].std(ddof=1))
+    assert truth.snr == pytest.approx(
+        SPEC.effect / (cars["car"].std(ddof=1) / np.sqrt(len(cars))))
+    # Baseline + injected is the planted reference CAR.
+    after = event_cars(planted_prices, benchmarks, events[events["event_id"].isin(measurable)],
+                       H).set_index("event_id")["car"]
+    for event_id, car in after.items():
+        assert car == pytest.approx(truth.baseline_car[event_id]
+                                    + truth.injected_car[event_id], abs=1e-12)
+
+
+def test_zero_noise_baseline_has_no_snr(prices, benchmarks, events):
+    _, truth = make_planted(prices, events, SPEC, MIN_EVENTS, benchmarks)
+    assert truth.baseline_car_mean == pytest.approx(0, abs=1e-12)
+    assert truth.baseline_car_std == pytest.approx(0, abs=1e-12)
+    assert truth.snr is None
+
+
+def test_spillover_is_eligible_non_targets_sharing_a_planted_day(planted, prices, events):
+    _, truth = planted
+    targets = events[events["event_id"].isin(truth.target_event_ids)]
+    touched = window_mask(prices, targets, H)
+    others = eligible(events)
+    others = others[~others["event_id"].isin(truth.target_event_ids)]
+    expected = set(_touching(prices, others, touched))
+    assert expected  # buybacks announced with a raised dividend, at least
+    assert set(truth.spillover_event_ids) == expected
+    assert {"buyback"} <= set(events.set_index("event_id").loc[sorted(expected), "event_type"])
+    # Ineligible events never count.
+    flagged = events.assign(extraction_status="flagged")
+    assert spillover_ids(prices, flagged, truth.target_event_ids, H) == []

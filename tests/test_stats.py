@@ -7,11 +7,13 @@ from scipy import stats as sp_stats
 
 from evaluation.metrics import TRUTH_COLUMNS, MetricsTables, evaluate, metrics_table
 from evaluation.stats import (
+    SNR_BIN_ORDER,
     STRENGTH_ORDER,
     PooledRatio,
     bootstrap_ci,
     detection_curve_data,
     paired_comparison,
+    snr_bin,
     system_summary,
 )
 from evaluation.universe_record import placebo_record, planted_record
@@ -180,6 +182,32 @@ def test_detection_curve_data():
     # weak truths only exist in u1: drawing only u2 gives no weak truth, so 1.0 throughout.
     weak = strength[strength["value"] == "weak"].iloc[0]
     assert (weak["lo"], weak["hi"]) == (1.0, 1.0)
+
+
+def test_snr_bin_edges():
+    values = [0.0, 0.99, 1.0, 1.99, 2.0, 3.0, 3.99, 4.0, 40.0]
+    assert [snr_bin(v) for v in values] == [
+        "<1", "<1", "1-2", "1-2", "2-3", "3-4", "3-4", ">=4", ">=4"]
+    assert snr_bin(float("nan")) is None
+
+
+def test_detection_curve_by_snr_bin():
+    rows = [planted_row("R3", "u1", 3, 2), planted_row("R3", "u2", 3, 1)]
+    truths = [
+        {**truth_row("R3", "u1", "a", "strong", True), "snr": 5.0},
+        {**truth_row("R3", "u1", "b", "weak", True), "snr": 1.5},
+        {**truth_row("R3", "u1", "c", "very_weak", False), "snr": 0.4},
+        {**truth_row("R3", "u2", "a", "strong", True), "snr": 4.0},
+        {**truth_row("R3", "u2", "b", "weak", False), "snr": 1.0},
+        {**truth_row("R3", "u2", "c", "very_weak", False), "snr": float("nan")},
+    ]
+    out = detection_curve_data(tables(rows, truths), seed=0, n_boot=N_BOOT)
+    snr = out[out["group"] == "snr_bin"].set_index("value")
+    assert list(snr.index) == [v for v in SNR_BIN_ORDER if v in {"<1", "1-2", ">=4"}]
+    assert snr["n_truths"].to_dict() == {"<1": 1, "1-2": 2, ">=4": 2}  # NaN left out
+    assert snr["recall"].to_dict() == {"<1": 0.0, "1-2": 0.5, ">=4": 1.0}
+    assert list(out["group"].unique()) == ["strength", "feature_type", "complexity",
+                                           "snr_bin"]
 
 
 # paired_comparison

@@ -12,20 +12,31 @@ injected into each target's own window (injected_car), overlaps included.
 
 Only `ret` and `adj_close` change. close, OHLC, raw_close and mcap are left as they
 were, so the events (whose mcap fields come from the prices) stay valid.
+
+Given benchmarks, the truth also records the reference CAR of the measurable targets
+on the unplanted prices (baseline_car), so that a finding's expected effect is
+baseline + injected, and the plant's signal-to-noise ratio (snr). spillover_event_ids
+lists eligible non-target events whose window shares a planted day: they carry part
+of the effect although no truth claims them.
 """
 
+import math
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
 import pandas as pd
+import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from store.schema import EventType
 from universes.fake_events import BUYBACK_RATIONALE_LABELS, DIVIDEND_FRAMING_LABELS
 
 DEFAULT_HOLDING_DAYS = 5
-STRENGTHS = {0.005: "very_weak", 0.01: "weak", 0.02: "moderate", 0.04: "strong"}
-GRID_DIRECTIONS = {0.005: 1, 0.01: -1, 0.02: 1, 0.04: -1}
+STRENGTHS = {0.0025: "very_weak", 0.005: "weak", 0.01: "moderate", 0.02: "strong"}
+GRID_DIRECTIONS = {0.0025: 1, 0.005: -1, 0.01: 1, 0.02: -1}
+
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "default.yaml"
 
 # Text feature -> the label the text plants target, by name (never by position in the
 # label tuples, which may be reordered when Retrieval's final labels land).
@@ -87,6 +98,22 @@ class PlantTruth(BaseModel):
     # with no prices row on day 0 have no window and are left out.
     injected_car: dict[str, float] = {}
     injected_car_mean: float | None = None  # over measurable targets; None if there are none
+    # Reference CAR of the measurable targets on the unplanted prices, when benchmarks
+    # were given (None otherwise). Targets the event study skips are left out.
+    baseline_car: dict[str, float] | None = None
+    baseline_car_mean: float | None = None
+    baseline_car_std: float | None = None  # sample std; None below 2 CARs
+    # effect / (baseline_car_std / sqrt(CARs in baseline_car)); None without a positive std.
+    snr: float | None = None
+    # Eligible non-target events (any type) whose window, of spec.holding_days rows,
+    # shares a planted day with a target on the same ticker.
+    spillover_event_ids: list[str] | None = None
+
+
+def default_plant_min_events(path: Path = DEFAULT_CONFIG_PATH) -> int:
+    """plant_min_events from the config: the fewest targets a planted spec may have."""
+    with open(path, encoding="utf-8") as f:
+        return int(yaml.safe_load(f)["plant_min_events"])
 
 
 def injected_cars(
@@ -122,6 +149,72 @@ def window_positions(
     return out
 
 
+def _day0_positions(days: np.ndarray, events: pd.DataFrame) -> np.ndarray:
+    """Position of each event's first_tradeable_date in days (sorted); -1 if absent."""
+    day0 = pd.to_datetime(events["first_tradeable_date"]).dt.normalize().to_numpy()
+    pos = np.searchsorted(days, day0)
+    found = pos < len(days)
+    found[found] = days[pos[found]] == day0[found]
+    return np.where(found, pos, -1)
+
+
+def spillover_ids(
+    prices: pd.DataFrame, events: pd.DataFrame, target_ids, holding_days: int
+) -> list[str]:
+    """Eligible non-target events whose window shares a day with a target's window.
+
+    Windows are the holding_days rows from first_tradeable_date on the ticker, cut
+    short at the end of the data, as in make_planted. In events order.
+    """
+    rows = eligible(events)
+    is_target = rows["event_id"].isin(set(target_ids)).to_numpy()
+    targets, others = rows[is_target], rows[~is_target]
+    others = others[others["ticker"].isin(set(targets["ticker"]))]
+    if others.empty:
+        return []
+    dates = pd.to_datetime(prices["date"]).dt.normalize().to_numpy()
+    ticker_rows = prices.groupby("ticker", sort=False).indices
+    spill = set()
+    for ticker, group in others.groupby("ticker", sort=False):
+        days = np.sort(dates[ticker_rows[ticker]])
+        starts = _day0_positions(days, targets[targets["ticker"] == ticker])
+        starts = starts[starts >= 0]
+        # planted[i]: row i is in some target's window; covered[i]: planted rows before i.
+        change = np.zeros(len(days) + 1, dtype=int)
+        np.add.at(change, starts, 1)
+        np.add.at(change, np.minimum(starts + holding_days, len(days)), -1)
+        planted = np.cumsum(change[:-1]) > 0
+        covered = np.concatenate([[0], np.cumsum(planted)])
+        pos = _day0_positions(days, group)
+        end = np.minimum(pos + holding_days, len(days))
+        hit = (pos >= 0) & (covered[end] > covered[np.maximum(pos, 0)])
+        spill.update(group.loc[hit, "event_id"])
+    return [e for e in events["event_id"] if e in spill]
+
+
+def baseline_fields(
+    prices: pd.DataFrame, benchmarks: pd.DataFrame, events: pd.DataFrame, truth: PlantTruth
+) -> dict:
+    """truth's baseline_car, its mean and std, and snr, on prices (unplanted)."""
+    from evaluation.reference_car import event_cars  # evaluation imports this module
+
+    measurable = set(truth.target_event_ids) - set(truth.unmeasurable_event_ids)
+    cars = event_cars(prices, benchmarks, events[events["event_id"].isin(measurable)],
+                      truth.spec.holding_days)
+    baseline = dict(zip(cars["event_id"], cars["car"].astype(float), strict=True))
+    values = np.array(list(baseline.values()), dtype=float)
+    std = float(values.std(ddof=1)) if len(values) > 1 else None
+    snr = None
+    if std is not None and std > 0:
+        snr = truth.spec.effect / (std / math.sqrt(len(values)))
+    return {
+        "baseline_car": baseline,
+        "baseline_car_mean": float(values.mean()) if len(values) else None,
+        "baseline_car_std": std,
+        "snr": snr,
+    }
+
+
 def eligible(events: pd.DataFrame) -> pd.DataFrame:
     """Events a backtest may use (docs/data_schema.md): new announcements that passed."""
     return events[events["is_new_announcement"] & (events["extraction_status"] == "passed")]
@@ -140,9 +233,16 @@ def select_targets(events: pd.DataFrame, spec: PlantSpec) -> pd.DataFrame:
 
 
 def make_planted(
-    prices: pd.DataFrame, events: pd.DataFrame, spec: PlantSpec, min_events: int
+    prices: pd.DataFrame,
+    events: pd.DataFrame,
+    spec: PlantSpec,
+    min_events: int,
+    benchmarks: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, PlantTruth]:
-    """(prices with the effect planted, truth). Raises if fewer than min_events targets."""
+    """(prices with the effect planted, truth). Raises if fewer than min_events targets.
+
+    With benchmarks, the truth's baseline fields and snr are measured on prices.
+    """
     targets = select_targets(events, spec)
     if len(targets) < min_events:
         raise ValueError(
@@ -210,7 +310,11 @@ def make_planted(
         unmeasurable_event_ids=unmeasurable,
         injected_car=injected,
         injected_car_mean=injected_mean,
+        spillover_event_ids=spillover_ids(prices, events, targets["event_id"],
+                                          spec.holding_days),
     )
+    if benchmarks is not None:
+        truth = truth.model_copy(update=baseline_fields(prices, benchmarks, events, truth))
     return planted, truth
 
 
@@ -299,11 +403,16 @@ def candidate_specs(
 
 def default_spec_grid(
     events: pd.DataFrame,
-    min_events: int,
+    min_events: int | None = None,
     holding_days: int = DEFAULT_HOLDING_DAYS,
     seed: int = 0,
 ) -> tuple[list[PlantSpec], list[DroppedSpec]]:
-    """(specs with at least min_events eligible targets in events, the dropped ones)."""
+    """(specs with at least min_events eligible targets in events, the dropped ones).
+
+    min_events defaults to plant_min_events in the config.
+    """
+    if min_events is None:
+        min_events = default_plant_min_events()
     specs, dropped = [], []
     for spec in candidate_specs(events, holding_days, seed):
         n_targets = len(select_targets(events, spec))

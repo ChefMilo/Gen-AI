@@ -73,12 +73,15 @@ class _Ticker:
         self.mcap = rows["mcap_usd"].to_numpy()
         self.bucket = rows["mcap_bucket"].to_numpy()
         bad = rows["is_bad_price"].to_numpy(dtype=bool)
+        has_mcap = (rows["mcap_usd"].notna() & rows["mcap_bucket"].notna()).to_numpy()
         cal_pos = {d: k for k, d in enumerate(calendar)}
-        # An event day needs a clean row, a clean prior row (for mcap) and a calendar
-        # day before it (for the after-close acceptance rule).
+        # An event day needs a clean row, a clean prior row with mcap_usd and
+        # mcap_bucket (real prices lack them on some rows) and a calendar day before
+        # it (for the after-close acceptance rule).
         self.eligible = np.array(
             [
-                i >= 1 and not bad[i] and not bad[i - 1] and cal_pos[d] >= 1
+                i >= 1 and not bad[i] and not bad[i - 1] and has_mcap[i - 1]
+                and cal_pos[d] >= 1
                 for i, d in enumerate(self.dates)
             ],
             dtype=bool,
