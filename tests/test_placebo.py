@@ -1,4 +1,6 @@
-from datetime import date
+import bisect
+import itertools
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -8,10 +10,13 @@ from evaluation.reference_car import event_cars
 from universe_helpers import zero_noise
 from universes.fake_events import MARKET_CLOSE, make_fake_events, rows_as_events
 from universes.placebo import (
+    DATE_FIELDS,
     PLACEBO_COLUMNS,
+    _shift_dates,
     first_tradeable_date,
     make_placebo,
     make_placebo_universes,
+    shift_trading_days,
 )
 from universes.planted import PlantSpec, default_spec_grid, eligible, make_planted
 from universes.synthetic import make_synthetic_benchmarks, make_synthetic_prices
@@ -24,7 +29,8 @@ MIN_EVENTS = 20  # configs/default.yaml
 EFFECT = 0.02
 
 RECOMPUTED = ["first_tradeable_date", "acceptance_datetime", "mcap_usd", "mcap_bucket",
-              "buyback_pct_mcap"]
+              "buyback_pct_mcap", *DATE_FIELDS]
+ALL_DATES = ["first_tradeable_date", *DATE_FIELDS]
 
 
 @pytest.fixture(scope="module")
@@ -152,6 +158,105 @@ def test_point_in_time_fields_from_prior_day(placebo, prices, events):
     before = events.set_index("event_id").loc[moved["event_id"]].drop(columns=RECOMPUTED)
     after = moved.set_index("event_id").drop(columns=RECOMPUTED + PLACEBO_COLUMNS)
     pd.testing.assert_frame_equal(after, before)
+
+
+def calendar_of(prices):
+    return sorted({d.date() for d in pd.to_datetime(prices["date"]).unique()})
+
+
+def trading_position(day, calendar):
+    """Index of the last trading day on or before day."""
+    return bisect.bisect_right(calendar, day) - 1
+
+
+def date_pairs(placebo_events, events, info):
+    """(event_id, {field: (original, placebo)}) over each moved event's non-null dates."""
+    original = events.set_index("event_id")
+    for event_id, row in moved_rows(placebo_events, info).set_index("event_id").iterrows():
+        yield event_id, {
+            f: (original.at[event_id, f], row[f])
+            for f in ALL_DATES if not pd.isna(original.at[event_id, f])
+        }
+
+
+def test_date_fields_keep_ordering_and_trading_day_gaps(placebo, prices, events):
+    out, info = placebo
+    calendar = calendar_of(prices)
+    adjusted = {(a.event_id, a.field) for a in info.date_adjustments}
+    n_checked = 0
+    for event_id, dates in date_pairs(out, events, info):
+        shift = info.shift_trading_days[event_id]
+        assert all(new is not None and not pd.isna(new) for _, new in dates.values())
+        on_calendar = {}
+        for field, (old, new) in dates.items():
+            if (event_id, field) in adjusted:
+                continue
+            # moved by exactly the event's trading-day shift
+            assert trading_position(new, calendar) == trading_position(old, calendar) + shift
+            on_calendar[field] = (old, new)
+        # so every pairwise trading-day gap is the original one
+        for (_, (a0, a1)), (_, (b0, b1)) in itertools.combinations(on_calendar.items(), 2):
+            assert (trading_position(a1, calendar) - trading_position(b1, calendar)
+                    == trading_position(a0, calendar) - trading_position(b0, calendar))
+        # and the relative ordering of all date fields is the original one
+        for (_, (a0, a1)), (_, (b0, b1)) in itertools.combinations(dates.items(), 2):
+            assert np.sign((a1 - b1).days) == np.sign((a0 - b0).days)
+        n_checked += 1
+    assert n_checked == info.n_moved
+
+
+def test_dates_past_the_data_are_calendar_shifts(placebo, prices, events):
+    out, info = placebo
+    calendar = calendar_of(prices)
+    by_field = {(a.event_id, a.field): a for a in info.date_adjustments}
+    assert {a.method for a in info.date_adjustments} == {"calendar_days"}  # no clamps needed
+    for event_id, dates in date_pairs(out, events, info):
+        old_ftd, new_ftd = dates["first_tradeable_date"]
+        for field, (old, new) in dates.items():
+            adjustment = by_field.get((event_id, field))
+            if new > calendar[-1]:
+                # No trading-day shift ends after the data; only calendar-day fallbacks do.
+                assert adjustment is not None
+            if adjustment is not None:
+                assert shift_trading_days(old, info.shift_trading_days[event_id],
+                                          calendar) is None
+                assert new == old + (new_ftd - old_ftd) == adjustment.shifted
+            assert new >= calendar[0]
+
+
+def test_shift_trading_days():
+    calendar = [date(2024, 1, d) for d in (2, 3, 4, 5, 8, 9, 10, 11, 12)]  # Tue .. Fri
+    assert shift_trading_days(date(2024, 1, 3), 2, calendar) == date(2024, 1, 5)
+    assert shift_trading_days(date(2024, 1, 8), -3, calendar) == date(2024, 1, 3)
+    # A weekend day keeps its offset from the Friday before it, cut to the room before
+    # the next trading day: none after Wed 10th or Tue 2nd, so it lands on them.
+    assert shift_trading_days(date(2024, 1, 6), 3, calendar) == date(2024, 1, 10)
+    assert shift_trading_days(date(2024, 1, 7), -3, calendar) == date(2024, 1, 2)
+    assert shift_trading_days(date(2024, 1, 12), 1, calendar) is None
+    assert shift_trading_days(date(2024, 1, 2), -1, calendar) is None
+    assert shift_trading_days(date(2024, 1, 13), 0, calendar) is None
+    long_weekend = [date(2024, 1, 5), date(2024, 1, 9), date(2024, 1, 10)]  # Fri, Tue, Wed
+    assert shift_trading_days(date(2024, 1, 6), 0, long_weekend) == date(2024, 1, 6)
+    assert shift_trading_days(date(2024, 1, 10), -2, long_weekend) == date(2024, 1, 5)
+
+
+def test_shift_dates_clamps_ordering():
+    calendar = [date(2024, 1, 2) + timedelta(days=i) for i in range(60)]  # every day trades
+    event = pd.Series({
+        "event_id": "e1",
+        "first_tradeable_date": date(2024, 1, 10),
+        "announcement_date": date(2024, 1, 11),  # after its first tradeable date
+        "record_date": date(2024, 1, 20),
+        "payable_date": date(2024, 1, 18),  # before its record date
+        "ex_date": None,
+        "buyback_expiry": float("nan"),
+    })
+    shifted, adjustments = _shift_dates(event, date(2024, 1, 15), 5, calendar)
+    assert shifted == {"announcement_date": date(2024, 1, 15), "record_date": date(2024, 1, 25),
+                       "payable_date": date(2024, 1, 25)}
+    assert [(a.field, a.method) for a in adjustments] == [
+        ("announcement_date", "clamped"), ("payable_date", "clamped")
+    ]
 
 
 def test_still_validates_as_events(placebo):

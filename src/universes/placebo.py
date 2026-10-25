@@ -16,6 +16,13 @@ mcap_bucket and buyback_pct_mcap are recomputed from the prior trading day;
 dividend_change_pct and the other extracted fields are left as they were.
 Ineligible rows are kept unchanged and stay ineligible.
 
+The other date fields (DATE_FIELDS) move with the event: by the same number of
+trading days as first_tradeable_date moved on the ticker's rows, counted on the
+NYSE calendar of the prices (shift_trading_days). A date that would leave the
+calendar is shifted by calendar days instead; announcement_date is kept on or
+before first_tradeable_date and payable_date on or after record_date. Both
+adjustments are listed in PlaceboInfo.date_adjustments.
+
 store.schema.Event ignores unknown fields, so the extra columns (placebo,
 original_first_tradeable_date) are dropped by rows_as_events(); the original dates
 are in PlaceboInfo as well.
@@ -23,7 +30,8 @@ are in PlaceboInfo as well.
 
 import bisect
 from collections.abc import Mapping
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -36,6 +44,7 @@ from universes.planted import DEFAULT_HOLDING_DAYS, eligible
 
 DEFAULT_MIN_GAP_DAYS = 10
 PLACEBO_COLUMNS = ["placebo", "original_first_tradeable_date"]
+DATE_FIELDS = ["announcement_date", "record_date", "payable_date", "ex_date", "buyback_expiry"]
 
 _PLACEBO_STREAM = 4
 
@@ -44,6 +53,18 @@ class DroppedEvent(BaseModel):
     event_id: str
     ticker: str
     n_valid_days: int  # valid days the ticker had, fewer than its eligible events
+
+
+class DateAdjustment(BaseModel):
+    """A date field not shifted by trading days alone."""
+
+    event_id: str
+    field: str
+    original: date
+    shifted: date
+    # calendar_days: a trading-day shift would leave the prices calendar.
+    # clamped: moved to keep announcement <= first_tradeable and record <= payable.
+    method: Literal["calendar_days", "clamped"]
 
 
 class PlaceboInfo(BaseModel):
@@ -55,6 +76,58 @@ class PlaceboInfo(BaseModel):
     original_first_tradeable_date: dict[str, date]  # moved event_id -> real date
     valid_days: dict[str, int]  # ticker -> valid days it had
     dropped: list[DroppedEvent]  # eligible events left out: their ticker ran out of days
+    shift_trading_days: dict[str, int]  # moved event_id -> trading days it moved
+    date_adjustments: list[DateAdjustment]
+
+
+def shift_trading_days(day: date, k: int, calendar: list[date]) -> date | None:
+    """day moved by k trading days; None if that leaves the calendar.
+
+    A non-trading day keeps its calendar-day offset from the last trading day on or
+    before it, cut short if the new gap to the next trading day is shorter, so the
+    result always has the same trading-day position + k (it may land on a trading day).
+    """
+    if not calendar[0] <= day <= calendar[-1]:
+        return None
+    i = bisect.bisect_right(calendar, day) - 1
+    j = i + k
+    if not 0 <= j < len(calendar):
+        return None
+    offset = (day - calendar[i]).days
+    if offset == 0:
+        return calendar[j]
+    if j == len(calendar) - 1:
+        return None
+    room = (calendar[j + 1] - calendar[j]).days - 1
+    return calendar[j] + timedelta(days=min(offset, room))
+
+
+def _shift_dates(
+    event: pd.Series, new_day: date, k: int, calendar: list[date]
+) -> tuple[dict[str, date], list[DateAdjustment]]:
+    """The event's DATE_FIELDS moved with it, and the ones not moved by k trading days."""
+    days = (new_day - event["first_tradeable_date"]).days
+    shifted, adjustments = {}, []
+
+    def adjust(field, value, method):
+        adjustments.append(DateAdjustment(event_id=event["event_id"], field=field,
+                                          original=event[field], shifted=value, method=method))
+        shifted[field] = value
+
+    for field in DATE_FIELDS:
+        value = event[field]
+        if value is None or pd.isna(value):
+            continue
+        moved = shift_trading_days(value, k, calendar)
+        if moved is None:
+            adjust(field, value + timedelta(days=days), "calendar_days")
+        else:
+            shifted[field] = moved
+    if shifted.get("announcement_date", new_day) > new_day:
+        adjust("announcement_date", new_day, "clamped")
+    if "record_date" in shifted and shifted.get("payable_date", date.max) < shifted["record_date"]:
+        adjust("payable_date", shifted["record_date"], "clamped")
+    return shifted, adjustments
 
 
 def first_tradeable_date(acceptance_et: datetime, calendar: list[date]) -> date:
@@ -134,6 +207,8 @@ def make_placebo(
     valid_days: dict[str, int] = {}
     dropped: list[DroppedEvent] = []
     drop_index = []
+    shifts: dict[str, int] = {}
+    date_adjustments: list[DateAdjustment] = []
 
     tickers = sorted(events.loc[is_eligible, "ticker"].unique())
     for i, ticker in enumerate(tickers):
@@ -190,6 +265,14 @@ def make_placebo(
                     out.at[idx, "buyback_pct_mcap"] = amount / mcap[p - 1] * 100
             moved[event_id] = events.at[idx, "first_tradeable_date"]
 
+            # The other date fields move by as many trading days as the event did.
+            shift = p - int(np.searchsorted(dates, real_days[idx].to_datetime64()))
+            fields, adjustments = _shift_dates(events.loc[idx], new_day, shift, calendar)
+            for field, value in fields.items():
+                out.at[idx, field] = value
+            shifts[event_id] = shift
+            date_adjustments += adjustments
+
     out = out.drop(index=drop_index)
     out = out.sort_values(["first_tradeable_date", "ticker", "event_id"], ignore_index=True)
     info = PlaceboInfo(
@@ -201,6 +284,8 @@ def make_placebo(
         original_first_tradeable_date=moved,
         valid_days=valid_days,
         dropped=dropped,
+        shift_trading_days=shifts,
+        date_adjustments=date_adjustments,
     )
     return out, info
 
