@@ -121,9 +121,12 @@ def test_unmeasurable_targets_excluded_from_jaccard():
     assert measurable_target_ids(t) == set(ids("e", 6))
     res = match_findings([finding(event_ids=ids("e", 6))], planted(t), J)
     assert res.matches[0].jaccard == 1.0
-    # Reporting the unmeasurable targets too costs overlap: 6/10.
+    # Listing the unmeasurable targets too makes no difference.
     res = match_findings([finding(event_ids=ids("e", 10))], planted(t), J)
-    assert res.matches[0].jaccard == pytest.approx(0.6)
+    assert res.matches[0].jaccard == 1.0
+    # Non-targets still count against the finding: 6 / (6 + 2).
+    res = match_findings([finding(event_ids=ids("e", 10) + ["x", "y"])], planted(t), J)
+    assert res.matches[0].jaccard == pytest.approx(0.75)
 
 
 def test_empty_findings():

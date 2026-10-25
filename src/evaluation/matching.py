@@ -2,11 +2,15 @@
 
 A finding matches a truth if all hold:
 - same event_type;
-- Jaccard(finding.event_ids, the truth's measurable targets) >= jaccard_min, where
-  measurable = target_event_ids minus unmeasurable_event_ids;
-- sign(effect_car) == the truth's direction (effect_car is read as the raw mean CAR
-  of the events, not the CAR of the long/short position);
+- Jaccard(finding.event_ids, target_event_ids) >= jaccard_min, with the truth's
+  unmeasurable_event_ids removed from both sides first, so listing or leaving out a
+  target the event study cannot measure does not change the score;
+- sign(effect_car) == the truth's direction;
 - passed_correction.
+
+TO CONFIRM with Member 3/4: effect_car is read as the mean event CAR, signed by the
+event effect (negative when prices fall after the events), not the return of the
+long/short position. Finding.direction is not used for matching.
 
 Each truth matches at most one finding and each finding at most one truth: among the
 pairs that pass every test, the highest Jaccard is taken first, ties going to the
@@ -31,6 +35,7 @@ from pydantic import BaseModel
 
 from agent.finding import Finding
 from evaluation.universe_record import UniverseRecord, UniverseType, measurable_target_ids
+from universes.planted import PlantTruth
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = REPO_ROOT / "configs" / "default.yaml"
@@ -97,9 +102,10 @@ class MatchResult(BaseModel):
         return sum(o.significant for o in self.outcomes)
 
 
-def _failed_tests(finding: Finding, truth, measurable: set[str], jaccard_min: float):
+def _failed_tests(finding: Finding, truth: PlantTruth, jaccard_min: float):
     """(Jaccard, list of failed tests) for one finding against one truth."""
-    j = jaccard(set(finding.event_ids), measurable)
+    unmeasurable = set(truth.unmeasurable_event_ids)
+    j = jaccard(set(finding.event_ids) - unmeasurable, measurable_target_ids(truth))
     failed = []
     if finding.event_type != truth.spec.event_type:
         failed.append("wrong_event_type")
@@ -140,11 +146,7 @@ def match_findings(
         )
 
     truths = record.truths
-    measurable = [measurable_target_ids(t) for t in truths]
-    tests = [
-        [_failed_tests(f, t, m, jaccard_min) for t, m in zip(truths, measurable, strict=True)]
-        for f in findings
-    ]
+    tests = [[_failed_tests(f, t, jaccard_min) for t in truths] for f in findings]
 
     # Greedy one-to-one assignment over the pairs that pass every test.
     pairs = sorted(
