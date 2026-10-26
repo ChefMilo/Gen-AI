@@ -326,3 +326,41 @@ def paired_comparison(
         hi=hi, n_universes=len(ids), differences=per_universe, n_pairs=len(diffs),
         test=test, p_value=p_value,
     )
+
+
+COMPARISON_COLUMNS = ["system_a", "system_b", "metric", "estimate", "lo", "hi",
+                      "n_universes", "n_pairs", "test", "p_value"]
+
+
+def compare_systems(
+    tables: MetricsTables,
+    systems: Sequence[str] | None = None,
+    metrics: Sequence[str] | None = None,
+    seed: int = 0,
+    n_boot: int = DEFAULT_N_BOOT,
+    alpha: float = DEFAULT_ALPHA,
+) -> pd.DataFrame:
+    """paired_comparison for every pair of systems (in order) and metric, one row each.
+
+    Each pair is compared on the universes both systems have rows for, so a pair that
+    failed for one system (evaluation.run) drops that universe from that comparison
+    only. metrics defaults to every POOLED_METRICS metric.
+    """
+    names = _systems(tables, systems)
+    metrics = list(POOLED_METRICS) if metrics is None else list(metrics)
+    df = tables.per_universe
+    rows = []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            common = set(df.loc[df["system"] == a, "universe_id"]) & set(
+                df.loc[df["system"] == b, "universe_id"])
+            pair = tables._replace(per_universe=df[df["system"].isin([a, b])
+                                                   & df["universe_id"].isin(common)])
+            for metric in metrics:
+                c = paired_comparison(pair, a, b, metric, seed=seed, n_boot=n_boot,
+                                      alpha=alpha)
+                rows.append({"system_a": a, "system_b": b, "metric": metric,
+                             "estimate": c.estimate, "lo": c.lo, "hi": c.hi,
+                             "n_universes": c.n_universes, "n_pairs": c.n_pairs,
+                             "test": c.test, "p_value": c.p_value})
+    return pd.DataFrame(rows, columns=COMPARISON_COLUMNS)
