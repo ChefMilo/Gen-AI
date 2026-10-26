@@ -1,0 +1,28 @@
+# Experiment runner settings (python -m evaluation.run). Keys left out are read from
+# configs/default.yaml (plant_min_events, backtest_budget, jaccard_min, research_start,
+# research_end) or universes.placebo (min_gap_days).
+
+experiment_id: fake-v1
+# 10 cannot cover every kept spec on the fake events: dividend raises are all framed as
+# growth and each _small spec is a subset of its base, so nested specs never share a
+# universe (max_dropped_share), and most universes hold 2 specs. 24 is the fewest that
+# fits on the synthetic data below (evaluation.plan raises with fewer).
+n_planted: 24
+n_placebo: 10
+specs_per_universe: 4  # at most; fewer where specs clash
+base_seed: 0
+holding_days: 5
+include_real: true  # one "real-research" universe with no truths
+# plant_min_events: 50  # default: configs/default.yaml
+# min_gap_days: 10  # default: universes.placebo.DEFAULT_MIN_GAP_DAYS
+max_dropped_share: 0.1  # most of a spec's targets cross-spec clashes may drop
+systems: ["null", "random"]  # quoted: a bare null is YAML's None
+n_boot: 2000
+
+data:
+  source: synthetic  # or real_prices_fake_events (needs $GENAI_DATA_DIR)
+  n_tickers: 120
+  start: 2015-01-01
+  end: 2026-12-31
+  seed: 0
+  events_seed: 0
