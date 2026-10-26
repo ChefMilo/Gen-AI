@@ -1,10 +1,11 @@
-"""Clashes between targets of different specs in plant_universe."""
+"""plant_universe: clashes between targets of different specs, spillover and baselines."""
 
 import numpy as np
 import pandas as pd
 import pytest
 from pydantic import ValidationError
 
+from evaluation.reference_car import event_cars
 from evaluation.universe_record import (
     UniverseRecord,
     find_clashes,
@@ -146,3 +147,62 @@ def test_plant_universe_injected_car_matches_make_planted(prices, events):
     _, record = plant_universe("u", prices, events, SPECS, min_events=1)
     for truth in record.truths:
         assert truth.injected_car == pytest.approx({e: 0.02 for e in truth.target_event_ids})
+
+
+def spill_events() -> pd.DataFrame:
+    events = make_events([
+        ("T", "A", 2, 1, 0),  # x target, window 2-6
+        ("D", "A", 6, 1, 0),  # x target clashing with Y: dropped, but shares day 6 with T
+        ("Y", "A", 8, 0, 1),  # y target clashing with D: dropped
+        ("Z", "B", 20, 0, 1),  # y target, window 20-24
+        ("N", "A", 4, 0, 0),  # non-target, window 4-8: shares 4-6 with T
+        ("F", "A", 3, 0, 0),  # would share days with T, but not eligible
+        ("K", "A", 0, 0, 0),  # a buyback, window 0-4: shares 2-4 with T
+        ("M", "B", 15, 0, 0),  # window 15-19, ends the day before Z's starts
+        ("O", "B", 24, 0, 0),  # window 24-28: shares day 24 with Z
+    ])
+    events.loc[events["event_id"] == "F", "extraction_status"] = "flagged"
+    events.loc[events["event_id"] == "K", "event_type"] = "buyback"
+    return events
+
+
+def test_spillover_in_make_planted(prices):
+    events = spill_events()
+    _, truth = make_planted(prices, events[events["event_id"] != "D"], SPECS[0], min_events=1)
+    assert truth.spillover_event_ids == ["N", "K"]
+
+
+def test_plant_universe_recomputes_spillover_on_all_events(prices):
+    _, record = plant_universe("u", prices, spill_events(), SPECS, min_events=1)
+    assert {d.event_id for d in record.dropped_targets} == {"D", "Y"}
+    spill = {t.spec.spec_id: t.spillover_event_ids for t in record.truths}
+    # D was dropped from x, so make_planted never saw it; it still gets x's effect.
+    assert spill == {"x": ["D", "N", "K"], "y": ["O"]}
+
+
+def test_plant_universe_min_events_defaults_to_config(prices, events):
+    with pytest.raises(ValueError, match="fewer than min_events=50"):
+        plant_universe("u", prices, events, SPECS)
+
+
+def test_plant_universe_baseline_from_unplanted_prices(prices):
+    rng = np.random.default_rng(0)
+    noisy = prices.assign(ret=rng.normal(0, 0.01, len(prices)))
+    benchmarks = pd.DataFrame({"ticker": "SPY", "date": DAYS, "ret": rng.normal(0, 0.01, 40)})
+    events = make_events([
+        ("e1", "A", 0, 1, 0), ("e2", "A", 10, 1, 0), ("e3", "B", 5, 1, 0),
+        ("e4", "A", 20, 0, 1), ("e5", "B", 20, 0, 1), ("e6", "B", 30, 0, 1),
+    ])
+    planted, record = plant_universe("u", noisy, events, SPECS, min_events=1,
+                                     benchmarks=benchmarks)
+    _, plain = make_planted(noisy, events, SPECS[0], min_events=1, benchmarks=benchmarks)
+    for truth in record.truths:
+        targets = events[events["event_id"].isin(truth.target_event_ids)]
+        before = event_cars(noisy, benchmarks, targets, H)
+        assert truth.baseline_car == dict(zip(before["event_id"], before["car"], strict=True))
+        assert truth.baseline_car_mean == pytest.approx(before["car"].mean())
+        assert truth.baseline_car_std == pytest.approx(before["car"].std(ddof=1))
+        assert truth.snr == pytest.approx(0.02 / (before["car"].std(ddof=1) / np.sqrt(3)))
+        after = event_cars(planted, benchmarks, targets, H)
+        np.testing.assert_allclose(after["car"], before["car"] + 0.02, atol=1e-12)
+    assert record.truths[0].baseline_car == plain.baseline_car

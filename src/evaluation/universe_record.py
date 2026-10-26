@@ -10,7 +10,10 @@ that truth's overlaps, as make_planted does.
 
 After planting, each truth's injected_car is recomputed from the final prices minus
 the original ones (recompute_injected), so it holds every effect that reached a
-target's window, from any spec.
+target's window, from any spec. spillover_event_ids is recomputed on all the events
+(make_planted only saw those left after the drops, so a dropped target is a
+spillover candidate too), and, given benchmarks, the baseline fields are measured on
+the original prices.
 """
 
 from typing import Literal
@@ -23,9 +26,12 @@ from universes.placebo import PlaceboInfo
 from universes.planted import (
     PlantSpec,
     PlantTruth,
+    baseline_fields,
+    default_plant_min_events,
     injected_cars,
     make_planted,
     select_targets,
+    spillover_ids,
     window_positions,
 )
 
@@ -184,15 +190,20 @@ def plant_universe(
     prices: pd.DataFrame,
     events: pd.DataFrame,
     specs: list[PlantSpec],
-    min_events: int,
+    min_events: int | None = None,
     seed: int | None = None,
     on_clash: OnClash = "drop",
+    benchmarks: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, UniverseRecord]:
     """(prices with every spec planted in turn, record).
 
     Clashing targets across specs are dropped (recorded on the record) or raise, per
-    on_clash. min_events applies after the drops; make_planted raises below it.
+    on_clash. min_events (default: plant_min_events in the config) applies after the
+    drops; make_planted raises below it. With benchmarks, each truth gets its
+    baseline fields and snr from the unplanted prices.
     """
+    if min_events is None:
+        min_events = default_plant_min_events()
     dropped = find_clashes(prices, events, specs)
     if dropped and on_clash == "raise":
         listed = ", ".join(f"{d.spec_id}:{d.event_id}" for d in dropped)
@@ -205,4 +216,13 @@ def plant_universe(
         planted, truth = make_planted(planted, spec_events, spec, min_events)
         truths.append(truth)
     truths = recompute_injected(prices, planted, events, truths)
+    truths = [
+        t.model_copy(update={
+            "spillover_event_ids": spillover_ids(prices, events, t.target_event_ids,
+                                                 t.spec.holding_days),
+            **(baseline_fields(prices, benchmarks, events, t) if benchmarks is not None
+               else {}),
+        })
+        for t in truths
+    ]
     return planted, planted_record(universe_id, truths, seed, dropped)

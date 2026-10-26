@@ -24,7 +24,10 @@ from evaluation.metrics import MetricsTables
 DEFAULT_N_BOOT = 10_000
 DEFAULT_ALPHA = 0.05
 STRENGTH_ORDER = ["very_weak", "weak", "moderate", "strong"]
-CURVE_GROUPS = ["strength", "feature_type", "complexity"]
+SNR_BINS = [(1.0, "<1"), (2.0, "1-2"), (3.0, "2-3"), (4.0, "3-4"), (float("inf"), ">=4")]
+SNR_BIN_ORDER = [label for _, label in SNR_BINS]
+CURVE_GROUPS = ["strength", "feature_type", "complexity", "snr_bin"]
+_VALUE_ORDER = {"strength": STRENGTH_ORDER, "snr_bin": SNR_BIN_ORDER}
 
 
 @dataclass(frozen=True)
@@ -176,6 +179,13 @@ def system_summary(
     return pd.DataFrame(rows)
 
 
+def snr_bin(snr: float) -> str | None:
+    """SNR_BINS label of snr (upper bound exclusive); None for NaN."""
+    if snr is None or np.isnan(snr):
+        return None
+    return next(label for upper, label in SNR_BINS if snr < upper)
+
+
 def detection_curve_data(
     tables: MetricsTables,
     seed: int = 0,
@@ -184,13 +194,16 @@ def detection_curve_data(
 ) -> pd.DataFrame:
     """Recall with CI per (system, group, value) for group in CURVE_GROUPS.
 
+    snr_bin bins the truths' snr (SNR_BINS); truths with no snr are left out of it.
     Each system resamples its planted universe ids (all of them, so a universe with no
     truth in a group still counts as drawn). Rows are sorted by system, group, then
-    value, with strength in STRENGTH_ORDER.
+    value, with strength in STRENGTH_ORDER and snr_bin in SNR_BIN_ORDER.
     """
     columns = ["system", "group", "value", "n_truths", "n_matched", "recall", "lo", "hi",
                "n_universes"]
     truths = tables.truths
+    snr = truths["snr"] if "snr" in truths.columns else pd.Series(np.nan, index=truths.index)
+    truths = truths.assign(snr_bin=snr.astype(float).map(snr_bin))
     out = []
     for system in _systems(tables, None):
         planted = _rows(tables, system, "planted")
@@ -219,8 +232,8 @@ def detection_curve_data(
     df = pd.DataFrame(out, columns=columns)
     if df.empty:
         return df
-    rank = {v: i for i, v in enumerate(STRENGTH_ORDER)}
-    order = [rank.get(v, len(rank)) if g == "strength" else 0
+    ranks = {g: {v: i for i, v in enumerate(vs)} for g, vs in _VALUE_ORDER.items()}
+    order = [ranks[g].get(v, len(ranks[g])) if g in ranks else 0
              for g, v in zip(df["group"], df["value"], strict=True)]
     group_rank = df["group"].map({g: i for i, g in enumerate(CURVE_GROUPS)})
     df = df.assign(_g=group_rank, _o=order).sort_values(["system", "_g", "_o", "value"])

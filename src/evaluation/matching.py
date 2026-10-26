@@ -72,7 +72,10 @@ class Match(BaseModel):
     spec_id: str
     jaccard: float
     effect_car: float  # reported
-    true_effect: float  # mean injected_car over the finding's measurable targets
+    injected_effect: float  # mean injected_car over the finding's measurable targets
+    # Mean baseline_car (unplanted CAR) over the same targets; None without a baseline.
+    baseline_effect: float | None = None
+    true_effect: float  # injected_effect + baseline_effect (0 without a baseline)
     effect_error: float  # effect_car - true_effect
     nominal_effect: float  # direction * effect
     nominal_effect_error: float  # effect_car - nominal_effect
@@ -133,6 +136,22 @@ def injected_effect(finding: Finding, truth: PlantTruth) -> float:
     return sum(values) / len(values)
 
 
+def baseline_effect(finding: Finding, truth: PlantTruth) -> float | None:
+    """Mean baseline_car over the finding's events that are measurable targets.
+
+    Falls back to baseline_car_mean when none of them has a baseline CAR; None when
+    the truth has no baseline.
+    """
+    if truth.baseline_car is None:
+        return None
+    measurable = measurable_target_ids(truth)
+    values = [truth.baseline_car[e] for e in set(finding.event_ids) & measurable
+              if e in truth.baseline_car]
+    if not values:
+        return truth.baseline_car_mean
+    return sum(values) / len(values)
+
+
 def match_findings(
     findings: list[Finding], record: UniverseRecord, jaccard_min: float | None = None
 ) -> MatchResult:
@@ -184,10 +203,13 @@ def match_findings(
             k = finding_to_truth[i]
             spec = truths[k].spec
             nominal = spec.direction * spec.effect
-            true_effect = injected_effect(f, truths[k])
+            injected = injected_effect(f, truths[k])
+            baseline = baseline_effect(f, truths[k])
+            true_effect = injected + (baseline or 0.0)
             matches.append(Match(
                 finding_id=f.finding_id, spec_id=spec.spec_id, jaccard=tests[i][k][0],
-                effect_car=f.effect_car, true_effect=true_effect,
+                effect_car=f.effect_car, injected_effect=injected, baseline_effect=baseline,
+                true_effect=true_effect,
                 effect_error=f.effect_car - true_effect, nominal_effect=nominal,
                 nominal_effect_error=f.effect_car - nominal,
             ))

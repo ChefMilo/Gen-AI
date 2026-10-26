@@ -26,54 +26,89 @@ CAR_COLUMNS = ["event_id", "ticker", "first_tradeable_date", "car", "n_days"]
 SKIPPED_COLUMNS = ["event_id", "ticker", "first_tradeable_date", "reason"]
 
 
+# Days per ticker in the (ticker, day) search key: more than any day number used.
+_DAY_SPAN = 1 << 32
+
+
 def _as_timestamps(values) -> pd.Series:
     return pd.to_datetime(pd.Series(values)).dt.normalize()
+
+
+def _day_numbers(timestamps: pd.Series) -> np.ndarray:
+    """Days since 1970-01-01 (int64) of normalised timestamps."""
+    return timestamps.to_numpy(dtype="datetime64[D]").astype(np.int64)
 
 
 def event_cars(
     prices: pd.DataFrame, benchmarks: pd.DataFrame, events: pd.DataFrame, holding_days: int
 ) -> pd.DataFrame:
-    """One row per measurable event, CAR_COLUMNS; skipped events in .attrs["skipped"]."""
+    """One row per measurable event, CAR_COLUMNS; skipped events in .attrs["skipped"].
+
+    Vectorised: prices are sorted by (ticker, date) and every event's day 0 is found
+    with one searchsorted on a (ticker, day) key; window sums gather positions.
+    """
     if holding_days < 1:
         raise ValueError("holding_days must be at least 1")
     bench = benchmarks[benchmarks["ticker"] == DEFAULT_BENCHMARK]
     bench_ret = pd.Series(bench["ret"].to_numpy(), index=_as_timestamps(bench["date"]).to_numpy())
 
-    by_ticker = {}
-    for ticker, rows in prices.groupby("ticker", sort=False):
-        rows = rows.assign(date=_as_timestamps(rows["date"]).to_numpy()).sort_values("date")
-        by_ticker[ticker] = (
-            rows["date"].to_numpy(),
-            rows["ret"].to_numpy(dtype=float),
-            rows["is_bad_price"].to_numpy(dtype=bool),
-        )
+    tickers = pd.Index(pd.unique(prices["ticker"]))
+    price_codes = tickers.get_indexer(prices["ticker"])
+    price_dates = _as_timestamps(prices["date"])
+    price_days = _day_numbers(price_dates)
+    order = np.lexsort((price_days, price_codes))
+    codes, days = price_codes[order], price_days[order]
+    ret = prices["ret"].to_numpy(dtype=float)[order]
+    bad = prices["is_bad_price"].to_numpy(dtype=bool)[order]
+    spy = bench_ret.reindex(price_dates.to_numpy()[order]).to_numpy(dtype=float)
+    n = len(order)
+    keys = codes.astype(np.int64) * _DAY_SPAN + days
+    group_end = np.searchsorted(codes, np.arange(len(tickers)), side="right")
 
-    cars, skipped = [], []
-    day0s = _as_timestamps(events["first_tradeable_date"]).to_numpy()
-    for (_, event), day0 in zip(events.iterrows(), day0s, strict=True):
-        key = {
-            "event_id": event["event_id"],
-            "ticker": event["ticker"],
-            "first_tradeable_date": event["first_tradeable_date"],
-        }
-        dates, ret, bad = by_ticker.get(event["ticker"], (np.array([], "datetime64[ns]"),) * 3)
-        pos = int(np.searchsorted(dates, day0))
-        if pos >= len(dates) or dates[pos] != day0:
-            skipped.append({**key, "reason": "no_day0"})
-            continue
-        end = pos + holding_days
-        if end > len(dates):
-            skipped.append({**key, "reason": "past_data"})
-            continue
-        if bad[pos:end].any():
-            skipped.append({**key, "reason": "bad_price"})
-            continue
-        spy = bench_ret.reindex(dates[pos:end]).to_numpy(dtype=float)
-        if np.isnan(spy).any():
-            skipped.append({**key, "reason": "no_benchmark"})
-            continue
-        cars.append({**key, "car": float(np.sum(ret[pos:end] - spy)), "n_days": holding_days})
+    event_codes = tickers.get_indexer(events["ticker"])
+    event_keys = event_codes.astype(np.int64) * _DAY_SPAN + _day_numbers(
+        _as_timestamps(events["first_tradeable_date"])
+    )
+    known = event_codes >= 0
+    pos = np.searchsorted(keys, event_keys)
+    found = known & (pos < n)
+    found[found] = keys[pos[found]] == event_keys[found]
+    ticker_end = np.zeros(len(events), dtype=int)
+    ticker_end[known] = group_end[event_codes[known]]
+    past = found & (pos + holding_days > ticker_end)
+    window = np.minimum(pos[:, None] + np.arange(holding_days), max(n - 1, 0))
+    in_data = found & ~past
+    bad_window = np.zeros(len(events), dtype=bool)
+    no_bench = np.zeros(len(events), dtype=bool)
+    car = np.full(len(events), np.nan)
+    if in_data.any():
+        rows = window[in_data]
+        bad_window[in_data] = bad[rows].any(axis=1)
+        no_bench[in_data] = np.isnan(spy[rows]).any(axis=1)
+        car[in_data] = np.sum(ret[rows] - spy[rows], axis=1)
 
+    reason = np.select(
+        [~found, past, bad_window, no_bench],
+        ["no_day0", "past_data", "bad_price", "no_benchmark"],
+        default="",
+    )
+    key = {
+        "event_id": list(events["event_id"]),
+        "ticker": list(events["ticker"]),
+        "first_tradeable_date": list(events["first_tradeable_date"]),
+    }
+    ok = reason == ""
+    cars = [
+        {"event_id": key["event_id"][i], "ticker": key["ticker"][i],
+         "first_tradeable_date": key["first_tradeable_date"][i], "car": float(car[i]),
+         "n_days": holding_days}
+        for i in np.flatnonzero(ok)
+    ]
+    skipped = [
+        {"event_id": key["event_id"][i], "ticker": key["ticker"][i],
+         "first_tradeable_date": key["first_tradeable_date"][i], "reason": str(reason[i])}
+        for i in np.flatnonzero(~ok)
+    ]
     out = pd.DataFrame(cars, columns=CAR_COLUMNS)
     out.attrs["skipped"] = pd.DataFrame(skipped, columns=SKIPPED_COLUMNS)
     return out

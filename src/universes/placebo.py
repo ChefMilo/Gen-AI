@@ -13,8 +13,10 @@ placebo universe is false by construction.
 acceptance_datetime moves with the event and keeps its clock time, so that
 first_tradeable_date still follows from it (docs/data_schema.md). mcap_usd,
 mcap_bucket and buyback_pct_mcap are recomputed from the prior trading day;
-dividend_change_pct and the other extracted fields are left as they were.
-Ineligible rows are kept unchanged and stay ineligible.
+dividend_change_pct and the other extracted fields are left as they were. An event
+that has these fields (needs_mcap) is only moved to a day whose prior row has
+mcap_usd and mcap_bucket (real prices lack them on some rows); the other events may
+take any valid day. Ineligible rows are kept unchanged and stay ineligible.
 
 The other date fields (DATE_FIELDS) move with the event: by the same number of
 trading days as first_tradeable_date moved on the ticker's rows, counted on the
@@ -51,7 +53,9 @@ _PLACEBO_STREAM = 4
 class DroppedEvent(BaseModel):
     event_id: str
     ticker: str
-    n_valid_days: int  # valid days the ticker had, fewer than its eligible events
+    # Valid days the ticker had for this event (only those with a prior-day mcap if
+    # the event needs_mcap), fewer than the events competing for them.
+    n_valid_days: int
 
 
 class DateAdjustment(BaseModel):
@@ -172,6 +176,49 @@ def valid_day_positions(
     return np.flatnonzero(ok)
 
 
+def needs_mcap(events: pd.DataFrame) -> pd.Series:
+    """Per event: whether it has fields recomputed from the prior day's mcap.
+
+    True if it has mcap_usd or mcap_bucket, or is a buyback with buyback_pct_mcap.
+    """
+    buyback_pct = (events["event_type"] == "buyback") & events["buyback_pct_mcap"].notna()
+    return events["mcap_usd"].notna() | events["mcap_bucket"].notna() | buyback_pct
+
+
+def _assign_days(
+    rng: np.random.Generator,
+    order: np.ndarray,
+    needs: np.ndarray,
+    valid: np.ndarray,
+    has_mcap: np.ndarray,
+) -> tuple[dict[int, int], dict[int, int]]:
+    """(target -> new position, target -> valid days it could use), targets in order.
+
+    Targets that need mcap draw first, from the valid days whose prior row has it;
+    the rest draw from the valid days left. A target missing from the first dict was
+    dropped.
+    """
+    valid_mcap = valid[has_mcap[valid - 1]] if len(valid) else valid
+    if len(valid_mcap) == len(valid) or not needs.any():
+        n_kept = min(len(order), len(valid))
+        chosen = np.sort(rng.choice(valid, size=n_kept, replace=False))
+        new_positions = rng.permutation(chosen)
+        assigned = {int(order[k]): int(new_positions[k]) for k in range(n_kept)}
+        return assigned, {int(j): len(valid) for j in order}
+
+    assigned, n_days = {}, {}
+    taken = np.array([], dtype=int)
+    for group_needs, pool in ((True, valid_mcap), (False, valid)):
+        group = [int(j) for j in order if needs[j] == group_needs]
+        pool = np.setdiff1d(pool, taken)
+        n_kept = min(len(group), len(pool))
+        chosen = rng.permutation(rng.choice(pool, size=n_kept, replace=False))
+        assigned.update(zip(group[:n_kept], (int(p) for p in chosen), strict=True))
+        n_days.update({j: len(pool) for j in group})
+        taken = np.concatenate([taken, chosen])
+    return assigned, n_days
+
+
 def make_placebo(
     prices: pd.DataFrame,
     events: pd.DataFrame,
@@ -199,6 +246,7 @@ def make_placebo(
     ticker_rows = prices.assign(_day=dates_all.to_numpy()).groupby("ticker", sort=True)
     real_days = pd.to_datetime(events["first_tradeable_date"]).dt.normalize()
     is_eligible = events.index.isin(eligible(events).index)
+    event_needs_mcap = needs_mcap(events).to_numpy(dtype=bool)
 
     out = events.copy()
     out["placebo"] = True
@@ -234,20 +282,20 @@ def make_placebo(
         valid_days[ticker] = len(valid)
 
         order = rng.permutation(len(targets))
-        n_kept = min(len(targets), len(valid))
-        chosen = np.sort(rng.choice(valid, size=n_kept, replace=False))
-        new_positions = rng.permutation(chosen)
         mcap = rows["mcap_usd"].to_numpy(dtype=float)
         bucket = rows["mcap_bucket"].to_numpy()
-        for k, j in enumerate(order):
+        needs = event_needs_mcap[targets]
+        assigned, n_days = _assign_days(rng, order, needs, valid,
+                                        (~np.isnan(mcap)) & pd.notna(bucket))
+        for j in order:
             idx = targets[j]
             event_id = events.at[idx, "event_id"]
-            if k >= n_kept:
+            if j not in assigned:
                 dropped.append(DroppedEvent(event_id=event_id, ticker=ticker,
-                                            n_valid_days=len(valid)))
+                                            n_valid_days=n_days[j]))
                 drop_index.append(idx)
                 continue
-            p = int(new_positions[k])
+            p = assigned[j]
             new_day = pd.Timestamp(dates[p]).date()
             acceptance = _acceptance_on(
                 new_day, pd.Timestamp(events.at[idx, "acceptance_datetime"]).to_pydatetime(),

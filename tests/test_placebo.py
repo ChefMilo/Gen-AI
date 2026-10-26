@@ -16,6 +16,7 @@ from universes.placebo import (
     first_tradeable_date,
     make_placebo,
     make_placebo_universes,
+    needs_mcap,
     shift_trading_days,
 )
 from universes.planted import PlantSpec, default_spec_grid, eligible, make_planted
@@ -372,3 +373,60 @@ def test_default_grid_on_full_placebo_universe(large_fake_prices, large_fake_eve
         ("single", "text"), ("conjunction", "text"),
     }
     assert {s.direction for s in specs} == {1, -1}
+
+
+def with_nan_mcap(prices, ticker_rows):
+    """prices with mcap_usd and mcap_bucket NaN on the given (ticker -> row slice) rows."""
+    out = prices.copy()
+    for ticker, rows in ticker_rows.items():
+        idx = out[out["ticker"] == ticker].sort_values("date").index[rows]
+        out.loc[idx, ["mcap_usd", "mcap_bucket"]] = np.nan
+    return out
+
+
+def test_needs_mcap(events):
+    assert needs_mcap(events).all()  # every fake event has mcap fields
+    bare = events.assign(mcap_usd=np.nan, mcap_bucket=None)
+    expected = (bare["event_type"] == "buyback") & bare["buyback_pct_mcap"].notna()
+    pd.testing.assert_series_equal(needs_mcap(bare), expected, check_names=False)
+    assert not needs_mcap(bare.assign(buyback_pct_mcap=np.nan)).any()
+
+
+def test_never_moves_onto_a_day_without_prior_mcap(prices, events):
+    nan_prices = with_nan_mcap(prices, {"T00": slice(0, 700), "T01": slice(None, None, 2)})
+    out, info = make_placebo(nan_prices, events, seed=0, min_gap_days=GAP, holding_days=H)
+    assert info.n_moved == info.n_eligible and not info.dropped
+    moved = moved_rows(out, info)
+    assert moved["mcap_usd"].notna().all() and moved["mcap_bucket"].notna().all()
+    buybacks = moved[moved["event_type"] == "buyback"]
+    assert buybacks["buyback_pct_mcap"].notna().all()
+    rows = ticker_rows(nan_prices)
+    for _, event in moved[moved["ticker"].isin(["T00", "T01"])].iterrows():
+        dates, _, mcap, bucket = rows[event["ticker"]]
+        p = int(np.searchsorted(dates, np.datetime64(event["first_tradeable_date"])))
+        assert event["mcap_usd"] == mcap[p - 1] and event["mcap_bucket"] == bucket[p - 1]
+
+
+def test_events_without_mcap_may_use_days_without_it(prices, events):
+    # T02 keeps mcap on 8 rows only; half its events have no mcap fields to recompute.
+    nan_prices = with_nan_mcap(prices, {"T02": slice(8, None)})
+    t02 = events.index[(events["ticker"] == "T02").to_numpy()]
+    bare = t02[::2]
+    events = events.copy()
+    events.loc[bare, ["mcap_usd", "buyback_pct_mcap"]] = np.nan
+    events.loc[bare, "mcap_bucket"] = None
+    out, info = make_placebo(nan_prices, events, seed=0, min_gap_days=GAP, holding_days=H)
+
+    needing = set(events.loc[t02.difference(bare), "event_id"])
+    needing &= set(eligible(events)["event_id"])
+    dropped = {d.event_id for d in info.dropped}
+    assert dropped and dropped <= needing  # few days with mcap: some needing events drop
+    n_mcap_days = {d.n_valid_days for d in info.dropped}
+    assert len(n_mcap_days) == 1 and n_mcap_days.pop() < info.valid_days["T02"]
+    moved = moved_rows(out, info)
+    mine = moved[moved["ticker"] == "T02"]
+    assert mine.loc[mine["event_id"].isin(needing), "mcap_usd"].notna().all()
+    assert set(mine["event_id"]) >= set(events.loc[bare, "event_id"]) & set(
+        eligible(events)["event_id"])  # every bare eligible event still moved
+    assert not mine.duplicated("first_tradeable_date").any()
+    assert info.n_moved + len(info.dropped) == info.n_eligible
