@@ -233,3 +233,7 @@ __marimo__/
 # Local copies of the shared Drive data (never in git)
 /edgar/
 /data_core*/
+
+# Generated experiment output (plans, universes, runs, summaries)
+/results/*
+!/results/.gitkeep
