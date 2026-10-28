@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from scipy import stats as sp_stats
 
 from agent.finding import EvidenceQuote, Finding
+from baselines.r0 import R0System
 from dsl.signal import SignalSpec
 from evaluation.reference_car import event_cars
 from evaluation.universe_record import measurable_target_ids
@@ -38,8 +39,14 @@ from universes.planted import PlantTruth, eligible
 
 STUB_FINDING_SYSTEM = "R0"
 VIEW_EVENT_ORDER = ["first_tradeable_date", "ticker", "event_id"]
-METADATA_FIELDS = ["backtests_used", "tool_calls", "tokens", "cost_usd", "wall_time_s",
-                   "trace_path"]
+METADATA_FIELDS = [
+    "backtests_used",
+    "tool_calls",
+    "tokens",
+    "cost_usd",
+    "wall_time_s",
+    "trace_path",
+]
 
 
 @dataclass(frozen=True)
@@ -105,8 +112,14 @@ def session_id(system: str, view: UniverseView, seed: int) -> str:
 
 
 def _finding(
-    sid: str, k: int, event_type: str, event_ids: list[str], cars: pd.DataFrame,
-    passed: bool, rationale: str, n_tests: int,
+    sid: str,
+    k: int,
+    event_type: str,
+    event_ids: list[str],
+    cars: pd.DataFrame,
+    passed: bool,
+    rationale: str,
+    n_tests: int,
 ) -> Finding:
     """A Finding over event_ids with the reference CAR stats of cars; the corrected
     p-value is Bonferroni over n_tests (passed_correction is set by the caller)."""
@@ -117,12 +130,21 @@ def _finding(
     t_stat = mean / (sd / math.sqrt(n)) if n > 1 and sd > 0 else 0.0
     p_raw = float(2 * sp_stats.norm.sf(abs(t_stat)))
     return Finding(
-        finding_id=f"{sid}-f{k}", session_id=sid, system=STUB_FINDING_SYSTEM,
-        signal_id=f"{sid}-s{k}", signal_spec=SignalSpec(event_type=event_type),
-        event_type=event_type, event_ids=event_ids, n_events=len(event_ids),
-        direction="long" if mean >= 0 else "short", effect_car=mean, t_stat=t_stat,
-        p_value_raw=p_raw, p_value_corrected=min(1.0, p_raw * max(n_tests, 1)),
-        passed_correction=passed, rationale=rationale,
+        finding_id=f"{sid}-f{k}",
+        session_id=sid,
+        system=STUB_FINDING_SYSTEM,
+        signal_id=f"{sid}-s{k}",
+        signal_spec=SignalSpec(event_type=event_type),
+        event_type=event_type,
+        event_ids=event_ids,
+        n_events=len(event_ids),
+        direction="long" if mean >= 0 else "short",
+        effect_car=mean,
+        t_stat=t_stat,
+        p_value_raw=p_raw,
+        p_value_corrected=min(1.0, p_raw * max(n_tests, 1)),
+        passed_correction=passed,
+        rationale=rationale,
         evidence=[EvidenceQuote(event_id=event_ids[0], quote="stub system: no quote")],
     )
 
@@ -133,9 +155,11 @@ class NullSystem:
     name = "null"
 
     def run(self, view: UniverseView, budget: int, seed: int) -> SystemRun:
-        return SystemRun(findings=[], session_id=session_id(self.name, view, seed),
-                         metadata={"backtests_used": 0, "tool_calls": 0, "tokens": 0,
-                                   "cost_usd": 0.0})
+        return SystemRun(
+            findings=[],
+            session_id=session_id(self.name, view, seed),
+            metadata={"backtests_used": 0, "tool_calls": 0, "tokens": 0, "cost_usd": 0.0},
+        )
 
 
 class RandomSystem:
@@ -147,8 +171,13 @@ class RandomSystem:
 
     name = "random"
 
-    def __init__(self, significant_rate: float = 0.2, min_events: int = 20,
-                 max_events: int = 200, holding_days: int = 5):
+    def __init__(
+        self,
+        significant_rate: float = 0.2,
+        min_events: int = 20,
+        max_events: int = 200,
+        holding_days: int = 5,
+    ):
         self.significant_rate = significant_rate
         self.min_events, self.max_events = min_events, max_events
         self.holding_days = holding_days
@@ -156,8 +185,9 @@ class RandomSystem:
     def run(self, view: UniverseView, budget: int, seed: int) -> SystemRun:
         rng = np.random.default_rng(seed)
         sid = session_id(self.name, view, seed)
-        by_type = {t: g["event_id"].tolist()
-                   for t, g in view.events.groupby("event_type", sort=True)}
+        by_type = {
+            t: g["event_id"].tolist() for t, g in view.events.groupby("event_type", sort=True)
+        }
         by_type = {t: ids for t, ids in by_type.items() if len(ids) >= self.min_events}
         findings = []
         for k in range(budget if by_type else 0):
@@ -165,17 +195,28 @@ class RandomSystem:
             pool = by_type[event_type]
             size = int(rng.integers(self.min_events, min(self.max_events, len(pool)) + 1))
             ids = sorted(rng.choice(pool, size=size, replace=False).tolist())
-            cars = event_cars(view.prices, view.benchmarks,
-                              view.events[view.events["event_id"].isin(ids)], self.holding_days)
+            cars = event_cars(
+                view.prices,
+                view.benchmarks,
+                view.events[view.events["event_id"].isin(ids)],
+                self.holding_days,
+            )
             if cars.empty:
                 continue
             passed = bool(rng.random() < self.significant_rate)
-            findings.append(_finding(sid, k, event_type, ids, cars, passed, "random subset",
-                                     budget))
-        return SystemRun(findings=findings, session_id=sid,
-                         metadata={"backtests_used": budget if by_type else 0,
-                                   "tool_calls": budget if by_type else 0, "tokens": 0,
-                                   "cost_usd": 0.0})
+            findings.append(
+                _finding(sid, k, event_type, ids, cars, passed, "random subset", budget)
+            )
+        return SystemRun(
+            findings=findings,
+            session_id=sid,
+            metadata={
+                "backtests_used": budget if by_type else 0,
+                "tool_calls": budget if by_type else 0,
+                "tokens": 0,
+                "cost_usd": 0.0,
+            },
+        )
 
 
 class OracleSystem:
@@ -194,8 +235,9 @@ class OracleSystem:
     def run(self, view: UniverseView, budget: int, seed: int) -> SystemRun:
         return self.run_with_truths(view, budget, seed, [])
 
-    def run_with_truths(self, view: UniverseView, budget: int, seed: int,
-                        truths: list[PlantTruth]) -> SystemRun:
+    def run_with_truths(
+        self, view: UniverseView, budget: int, seed: int, truths: list[PlantTruth]
+    ) -> SystemRun:
         sid = session_id(self.name, view, seed)
         visible = set(view.events["event_id"])
         findings = []
@@ -203,27 +245,66 @@ class OracleSystem:
             ids = sorted(measurable_target_ids(truth) & visible)
             if not ids:
                 continue
-            cars = event_cars(view.prices, view.benchmarks,
-                              view.events[view.events["event_id"].isin(ids)], self.holding_days)
-            findings.append(_finding(sid, k, truth.spec.event_type, ids, cars, True,
-                                     f"oracle: {truth.spec.spec_id}", len(truths)))
-        return SystemRun(findings=findings, session_id=sid,
-                         metadata={"backtests_used": len(findings), "tool_calls": 0,
-                                   "tokens": 0, "cost_usd": 0.0})
+            cars = event_cars(
+                view.prices,
+                view.benchmarks,
+                view.events[view.events["event_id"].isin(ids)],
+                self.holding_days,
+            )
+            findings.append(
+                _finding(
+                    sid,
+                    k,
+                    truth.spec.event_type,
+                    ids,
+                    cars,
+                    True,
+                    f"oracle: {truth.spec.spec_id}",
+                    len(truths),
+                )
+            )
+        return SystemRun(
+            findings=findings,
+            session_id=sid,
+            metadata={
+                "backtests_used": len(findings),
+                "tool_calls": 0,
+                "tokens": 0,
+                "cost_usd": 0.0,
+            },
+        )
 
 
 # Systems the CLI can name. OracleSystem is deliberately absent.
-SYSTEMS: dict[str, type] = {"null": NullSystem, "random": RandomSystem}
+SYSTEMS: dict[str, type] = {
+    "null": NullSystem,
+    "random": RandomSystem,
+    "r0": R0System,
+}
 
 
-def make_systems(names: list[str], holding_days: int = 5,
-                 min_events: int = 20) -> list[ResearchSystem]:
-    unknown = [n for n in names if n not in SYSTEMS]
+def make_systems(
+    names: list[str],
+    holding_days: int = 5,
+    min_events: int = 20,
+) -> list[ResearchSystem]:
+    unknown = [name for name in names if name not in SYSTEMS]
     if unknown:
         raise ValueError(f"unknown systems {unknown}; known: {sorted(SYSTEMS)}")
+
     out = []
+
     for name in names:
         cls = SYSTEMS[name]
-        out.append(cls(holding_days=holding_days, min_events=min_events)
-                   if cls is RandomSystem else cls())
+
+        if cls in (RandomSystem, R0System):
+            system = cls(
+                holding_days=holding_days,
+                min_events=min_events,
+            )
+        else:
+            system = cls()
+
+        out.append(system)
+
     return out
