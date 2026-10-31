@@ -35,7 +35,7 @@ def test_brief_comes_from_ports_and_config(make_session):
     assert "Backtest budget: 9 run_backtest calls (2 used so far)." in brief
     assert "Minimum events per signal: 25." in brief
     assert "Research period: 2016-01-01 to 2022-12-31." in brief
-    assert "test_universe" in brief
+    assert "test_universe" not in brief  # universe ids can reveal the universe type
     assert "dividend_change_pct" not in brief  # nothing hard-coded
 
 

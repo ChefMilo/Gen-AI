@@ -1,7 +1,8 @@
 """System prompt (fixed research protocol) and the task brief (generated per session).
 
 The brief is built only from the session's config and ports, so it never names a field,
-label, operator or limit that the ports do not actually offer.
+label, operator or limit that the ports do not actually offer. Nothing the model sees
+names the universe, its seed or its type (tests/agent/test_agent_blinding.py).
 """
 
 import hashlib
@@ -58,8 +59,10 @@ def build_task_brief(session: ResearchSession) -> str:
     lines = [
         f"# Research task (system {session.system})",
         "",
-        f"Universe: {session.universe_id}. Research period: {session.research_start} to "
-        f"{session.research_end}. Only events in this period are available to you.",
+        # No universe id here: ids can reveal the universe type (planted, placebo, ...).
+        f"Research period: {session.research_start} to "
+        f"{session.research_end or 'the latest available data'}. "
+        "Only events in this period are available to you.",
         "",
         "## Events",
         f"Event types: {_join(options['event_types'])}.",

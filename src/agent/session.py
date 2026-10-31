@@ -66,6 +66,7 @@ class ResearchSession:
             agent.get("effort"),
             code_version=self.code_version,
             thinking_display=agent.get("thinking_display"),
+            mask_dates_in_text=agent.get("mask_dates_in_text"),
             prompt_version=prompt_version,
             agent_system=self.system,
             research_start=self.research_start,

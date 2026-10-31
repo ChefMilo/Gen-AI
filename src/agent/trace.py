@@ -47,11 +47,13 @@ class Trace:
         effort: str | None,
         code_version: dict | None = None,
         thinking_display: str | None = None,
+        mask_dates_in_text: bool | None = None,
         **extra: Any,
     ) -> dict:
         """system is the system prompt; extra holds session facts (research system, period)."""
         settings = {"model": model, "max_tokens": max_tokens, "effort": effort,
-                    "thinking_display": thinking_display}
+                    "thinking_display": thinking_display,
+                    "mask_dates_in_text": mask_dates_in_text}
         return self.log(
             "session_start",
             config=config,

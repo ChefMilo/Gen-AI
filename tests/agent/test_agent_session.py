@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 import agent.session as session_module
-from agent.finding import EvidenceQuote, FindingClaim, System
+from agent.finding import EvidenceQuote, FindingClaim, ResearchSystemName, System
 from agent.ports import Backtester, EventQuery, Retriever
 from agent.session import AgentSystem, ResearchSession, new_session
 
@@ -83,8 +83,13 @@ def test_stubs_satisfy_the_ports():
     assert "dividend_framing" in retriever.available_text_features()
 
 
-def test_agent_systems_are_finding_systems_without_r0():
-    assert set(get_args(AgentSystem)) == set(get_args(System)) - {"R0"}
+def test_agent_systems_are_research_systems_without_r0():
+    assert set(get_args(AgentSystem)) == set(get_args(ResearchSystemName)) - {"R0"}
+
+
+def test_finding_system_allows_research_and_stub_names():
+    assert set(get_args(System)) == {"R0", "R1", "R2", "R3", "R3-U", "null", "random",
+                                     "oracle"}
 
 
 @pytest.mark.parametrize("system", ["R0", "R4", "r2"])
@@ -127,17 +132,20 @@ def test_log_start_records_settings_universe_period_and_code_version():
     assert event["universe_id"] == "fake_planted_seed0"
     assert event["agent_system"] == "R2"
     assert event["settings"] == {"model": "m", "max_tokens": 16000, "effort": None,
-                                 "thinking_display": None}
+                                 "thinking_display": None, "mask_dates_in_text": None}
     assert event["code_version"] == {"commit": "abc", "dirty": True}
     assert (event["research_start"], event["research_end"]) == (date(2016, 1, 1),
                                                                  date(2022, 12, 31))
 
 
-def test_log_start_records_thinking_display():
-    config = {**CONFIG, "agent": {**CONFIG["agent"], "thinking_display": "summarized"}}
+def test_log_start_records_thinking_display_and_date_masking():
+    config = {**CONFIG, "agent": {**CONFIG["agent"], "thinking_display": "summarized",
+                                  "mask_dates_in_text": True}}
     s = new_session("R2", config, "u", StubBacktester(), StubEvents(),
                     research_end="2022-12-31", in_memory=True)
-    assert s.log_start("P")["settings"]["thinking_display"] == "summarized"
+    settings = s.log_start("P")["settings"]
+    assert settings["thinking_display"] == "summarized"
+    assert settings["mask_dates_in_text"] is True
 
 
 def test_finding_claim():

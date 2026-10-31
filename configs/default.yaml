@@ -47,5 +47,7 @@ agent:
   effort: null  # null = provider default; else low | medium | high | xhigh | max
   thinking_display: summarized  # summarized | omitted | null (= model default)
   tool_result_max_chars: 4000  # longer tool results are truncated
+  mask_dates_in_text: true  # replace dates in passages and quotes with [DATE] (PR #6)
+  r3u_budget: 100  # R3-U's backtest budget (no correction); step and token caps still apply
   cache_dir: results/llm_cache
   trace_dir: results/traces

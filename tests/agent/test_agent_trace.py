@@ -44,7 +44,7 @@ def test_session_start_records_effective_settings():
     trace = Trace("s")
     event = trace.session_start({}, "SYSTEM", "fake-0", "m", 16000, "high")
     assert event["settings"] == {"model": "m", "max_tokens": 16000, "effort": "high",
-                                 "thinking_display": None}
+                                 "thinking_display": None, "mask_dates_in_text": None}
     assert event["system"] == "SYSTEM" and event["universe_id"] == "fake-0"
 
 

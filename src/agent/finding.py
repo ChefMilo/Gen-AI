@@ -7,7 +7,10 @@ from pydantic import BaseModel, model_validator
 from dsl.signal import SignalSpec
 from store.schema import EventType
 
-System = Literal["R0", "R1", "R2", "R3", "R3-U"]
+ResearchSystemName = Literal["R0", "R1", "R2", "R3", "R3-U"]
+# Stub systems in evaluation.systems (PR #16), so their findings can name themselves.
+StubSystemName = Literal["null", "random", "oracle"]
+System = Literal[ResearchSystemName, StubSystemName]
 Direction = Literal["long", "short"]
 
 

@@ -10,6 +10,8 @@ def test_default_config_has_agent_section(monkeypatch):
     assert agent["effort"] is None
     assert agent["thinking_display"] == "summarized"
     assert agent["tool_result_max_chars"] == 4000
+    assert agent["mask_dates_in_text"] is True
+    assert agent["r3u_budget"] == 100
     assert agent["cache_dir"] == REPO_ROOT / "results" / "llm_cache"
     assert agent["trace_dir"] == REPO_ROOT / "results" / "traces"
 
