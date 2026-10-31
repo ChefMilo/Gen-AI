@@ -8,9 +8,36 @@ holdout_start: null  # TODO: agree the research/holdout split
 
 backtest_budget: 30  # backtests per research session
 min_events: 20  # minimum events per signal
+plant_min_events: 50  # minimum targets per planted spec (default_spec_grid, plant_universe)
 jaccard_min: 0.6  # finding vs planted event set overlap to count as recovered
 alpha: 0.05  # significance level after correction
 seed: 0
+
+rag:
+  index_dir: results/rag_index  # built by: python -m rag.build
+  embedding_model: BAAI/bge-small-en-v1.5
+  query_prefix: "Represent this sentence for searching relevant passages: "  # bge query prefix
+  chunk_max_chars: 1500
+  candidates: 100  # hits taken from each of BM25 and dense before fusion
+  rrf_k: 60  # reciprocal rank fusion constant
+  passages_per_feature: 4  # chunks of a filing shown to the text-feature classifier
+  text_features:  # proposed labels; final set to be agreed (docs/data_schema.md, open questions)
+    dividend_framing:
+      event_type: dividend
+      query: reason for the dividend, its size and the outlook for future dividends
+      labels:
+        confidence: increase or payment framed as confidence in earnings, cash flow or growth
+        routine: regular or unchanged dividend declared with no stated reason
+        one_off: special or one-time payment, e.g. from excess cash, a gain or an asset sale
+        cautious: cut, suspension, or future payments tied to conditions or uncertainty
+    buyback_rationale:
+      event_type: buyback
+      query: reason for the share repurchase program and how it will be funded
+      labels:
+        undervalued: shares described as undervalued or an attractive investment
+        excess_capital: returning excess capital or strong free cash flow to shareholders
+        offset_dilution: offsetting dilution from equity compensation or share issuance
+        unspecified: no reason given beyond the authorization itself
 
 agent:
   model: null  # null = use $AGENT_MODEL

@@ -227,6 +227,13 @@ __marimo__/
 /data/index/
 /data/prices/
 
-# Agent outputs: archive final runs to Drive, never commit raw caches
-/results/llm_cache/
-/results/traces/
+# Retrieval index, built by: python -m rag.build
+/results/rag_index/
+
+# Local copies of the shared Drive data (never in git)
+/edgar/
+/data_core*/
+
+# Generated experiment output (plans, universes, runs, summaries)
+/results/*
+!/results/.gitkeep

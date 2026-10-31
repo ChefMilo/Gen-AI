@@ -163,3 +163,34 @@ def test_quotes_and_labels_are_marked_fake(events):
         assert set(e.text_features) == {feature}
         assert e.text_features[feature]["label"].startswith("fake_")
         assert e.text_features[feature]["quote"].startswith(FAKE_QUOTE_PREFIX)
+
+
+def with_nan_mcap(prices, ticker_rows):
+    """prices with mcap_usd and mcap_bucket NaN on the given (ticker -> row slice) rows."""
+    out = prices.copy()
+    for ticker, rows in ticker_rows.items():
+        idx = out[out["ticker"] == ticker].sort_values("date").index[rows]
+        out.loc[idx, ["mcap_usd", "mcap_bucket"]] = np.nan
+    return out
+
+
+def test_nan_mcap_rows_are_skipped(prices):
+    # Like real prices: mcap missing at the start of history, and in a few odd rows.
+    nan_prices = with_nan_mcap(prices, {"T00": slice(0, 400), "T01": slice(None, None, 3),
+                                        "T02": slice(None)})
+    events = make_fake_events(nan_prices, seed=0)
+    assert len(rows_as_events(events)) == len(events)
+    assert events["mcap_usd"].notna().all()
+    assert set(events["mcap_bucket"]) <= {"small", "mid", "large"}
+    assert "T02" not in set(events["ticker"])
+    # Every event's mcap fields come from a prior row that has them.
+    for ticker in ("T00", "T01"):
+        rows = nan_prices[nan_prices["ticker"] == ticker].sort_values("date")
+        dates = list(rows["date"])
+        mcap = rows["mcap_usd"].to_numpy()
+        mine = events[events["ticker"] == ticker]
+        assert len(mine) > 0
+        for day, value in zip(mine["first_tradeable_date"], mine["mcap_usd"], strict=True):
+            assert mcap[dates.index(day) - 1] == value
+    buybacks = events[events["event_type"] == "buyback"]
+    assert buybacks["buyback_pct_mcap"].notna().all()
