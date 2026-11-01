@@ -12,11 +12,12 @@ BB_QUOTE = "authorized the repurchase of up to $25 million"
 
 def _filings(**status):
     rows = [
-        ("G01", "AAA", "0000000001-24-000001", "labelled", "2"),
-        ("G02", "BBB", "0000000002-24-000002", "labelled", "0"),
-        ("G03", "CCC", "0000000003-24-000003", "todo", ""),
+        ("G01", "AAA", "0000000001-24-000001", "labelled", "2", "yes", "labelled"),
+        ("G02", "BBB", "0000000002-24-000002", "labelled", "0", "", ""),
+        ("G03", "CCC", "0000000003-24-000003", "todo", "", "yes", ""),
     ]
-    df = pd.DataFrame(rows, columns=["gold_id", "ticker", "accession_no", "status", "n_events"])
+    columns = ["gold_id", "ticker", "accession_no", "status", "n_events", "double", "second_status"]
+    df = pd.DataFrame(rows, columns=columns)
     for gold_id, value in status.items():
         df.loc[df["gold_id"] == gold_id, "status"] = value
     return df
@@ -70,9 +71,11 @@ def _as_event(e: gold.GoldEvent, n: int = 1, **changes) -> Event:
 
 def test_repo_gold_files_are_valid():
     filings = gold.load_filings()
-    assert len(filings) == 30
+    assert len(filings) == 60
     assert filings["accession_no"].is_unique
-    assert gold.check(filings, gold.load_events()) == []
+    assert (filings["double"] == "yes").sum() == 15
+    second = gold.load_events(name=gold.SECOND_EVENTS)
+    assert gold.check(filings, gold.load_events(), second=second) == []
 
 
 def test_load_events_reads_blanks_as_none(tmp_path):
@@ -123,7 +126,7 @@ def test_check_quotes_against_filing_text(tmp_path):
     wrapped = DIV_QUOTE.replace(" of ", " of\n")  # line breaks differ from the quote
     (folder / "ex99.txt").write_text(f"The Board\n  {wrapped}.")
     problems = gold.check(_filings(), _events(), data_dir=tmp_path)
-    assert problems == ["G01 buyback: quote is not copied exactly from the filing"]
+    assert problems == ["events.csv G01 buyback: quote is not copied exactly from the filing"]
 
 
 def test_score_perfect_extraction():
@@ -157,3 +160,38 @@ def test_score_ignores_todo_filings():
     stray = _as_event(div.model_copy(update={"accession_no": "0000000003-24-000003"}))
     result = gold.score(_filings(), [], [stray])
     assert result["n_predicted"] == 0 and result["precision"] == 1.0
+
+
+def test_check_second_labels_only_on_double_filings():
+    second = [
+        e.model_copy(update={"gold_id": "G02", "accession_no": "0000000002-24-000002"})
+        for e in _events()[:1]
+    ]
+    problems = gold.check(_filings(G02="labelled"), _events(), second=second)
+    assert problems == ["events_second.csv G02: filing is not marked double = yes"]
+
+
+def test_score_f1_field_prf_and_flagged_rate():
+    div, bb = _events()
+    predicted = [
+        _as_event(div, payable_date=None),  # one dividend field left out
+        _as_event(bb).model_copy(update={"extraction_status": "flagged"}),
+    ]
+    result = gold.score(_filings(), [div, bb], predicted)
+    assert result["f1"] == 1.0
+    assert result["flagged_rate"] == 0.5
+    payable = result["field_prf"]["payable_date"]
+    assert payable["precision"] is None  # nothing predicted for it
+    assert payable["recall"] == 0.0 and payable["f1"] is None
+    amount = result["field_prf"]["buyback_amount_usd"]
+    assert amount == {"precision": 1.0, "recall": 1.0, "f1": 1.0}
+    assert result["field_prf"]["buyback_shares"]["recall"] is None  # blank in the gold labels
+
+
+def test_agreement_uses_finished_double_filings_only():
+    div, bb = _events()
+    second = [div.model_copy(update={"dividend_per_share": 0.11})]  # missed the buyback
+    result = gold.agreement(_filings(), [div, bb], second)
+    assert result["n_filings"] == 1  # G01 only: G02 is not double, G03 is not finished
+    assert result["recall"] == 0.5 and result["precision"] == 1.0
+    assert result["field_accuracy"]["dividend_per_share"] == 0.0

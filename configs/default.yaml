@@ -3,8 +3,8 @@
 data_dir: ${GENAI_DATA_DIR}  # local copy of the shared Drive folder "Gen AI/Data/"
 
 research_start: 2016-01-01
-research_end: null  # TODO: agree the research/holdout split
-holdout_start: null  # TODO: agree the research/holdout split
+research_end: 2022-12-31  # research period 2016-2022
+holdout_start: 2023-01-01  # holdout 2023 onwards, tested once
 
 backtest_budget: 30  # backtests per research session
 min_events: 20  # minimum events per signal
