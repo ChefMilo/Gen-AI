@@ -12,16 +12,18 @@ NUDGE = (
 )
 
 
-def run_session(session: ResearchSession, client: LLMClient) -> list[FindingClaim]:
+def run_session(session: ResearchSession, client: LLMClient, **start_extra) -> list[FindingClaim]:
     """Run one research session. End reasons: finished, no_tool_calls, refusal, step_cap,
-    token_cap, error (the exception is re-raised after the trace is closed)."""
+    token_cap, error (the exception is re-raised after the trace is closed).
+    start_extra goes into the session_start event (e.g. the runner's seed)."""
     agent = session.agent_config
     max_steps = agent.get("max_steps", 60)
     token_cap = agent.get("max_session_input_tokens")
     tools = schemas_for(session.system)
     brief = build_task_brief(session)
     messages = [{"role": "user", "text": brief}]
-    session.log_start(SYSTEM_PROMPT, prompt_version(SYSTEM_PROMPT, brief, tools))
+    session.log_start(SYSTEM_PROMPT, prompt_version(SYSTEM_PROMPT, brief, tools),
+                      **start_extra)
 
     reason, nudged, input_tokens = "step_cap", False, 0
     try:

@@ -108,10 +108,14 @@ class CachedClient:
 
     SETTINGS = ("model", "max_tokens", "effort", "thinking_display")
 
-    def __init__(self, inner: LLMClient, cache_dir: str | Path):
+    def __init__(self, inner: LLMClient, cache_dir: str | Path, seed: int | None = None):
+        """seed (the runner's per-pair seed) joins the key, so repeated seeds on the same
+        universe get fresh samples instead of cache replays; None keeps the old keys."""
         self.inner = inner
         self.model = getattr(inner, "model", None)
         self.settings = {name: getattr(inner, name, None) for name in self.SETTINGS}
+        if seed is not None:
+            self.settings["seed"] = seed
         self.cache_dir = Path(cache_dir)
         self.hits = 0
         self.misses = 0

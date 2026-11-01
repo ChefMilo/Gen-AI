@@ -49,5 +49,8 @@ agent:
   tool_result_max_chars: 4000  # longer tool results are truncated
   mask_dates_in_text: true  # replace dates in passages and quotes with [DATE] (PR #6)
   r3u_budget: 100  # R3-U's backtest budget (no correction); step and token caps still apply
+  # USD per million tokens, per model, for SystemRun.metadata cost_usd (null if absent):
+  #   <model>: {input: ..., cache_read: ..., cache_write: ..., output: ...}
+  pricing: {}
   cache_dir: results/llm_cache
   trace_dir: results/traces
