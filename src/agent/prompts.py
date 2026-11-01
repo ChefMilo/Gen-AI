@@ -19,11 +19,11 @@ Research protocol:
 the effect should exist. When you define the signal that tests it, cite its hypothesis_id.
 2. Explore freely before testing. query_events (and search_announcements and \
 get_text_feature, when available) do not use the testing budget.
-3. The testing budget is fixed, and every run_backtest call counts against it, whatever the \
-result. Every backtest you run is included in a multiple-testing correction applied after \
-the session, so each extra test makes every finding harder to confirm. Prefer a few \
-well-motivated tests to many variations, and do not run near-duplicates of a signal you have \
-already tested.
+3. Follow the testing limits stated in the task brief. When a budget is enabled,
+every run_backtest call counts against it, whatever the result. When multiple-testing correction
+is enabled, it includes every attempted test at session end. In an explicitly unguarded
+experiment the budget and correction can be disabled by the controller, but the research
+cutoff and other limits still apply. Prefer well-motivated tests and avoid near-duplicates.
 4. Before reporting a signal, check that it is robust with inspect_results (for example by \
 year) and that it has enough events.
 5. Report a finding with report_finding only for a signal you have backtested, with an \
@@ -54,6 +54,18 @@ def build_task_brief(session: ResearchSession) -> str:
     budget = session.backtester.budget_status()
     fields = session.events.available_fields()
     min_events = session.config.get("min_events")
+    budget_text = (
+        f"Backtest budget: {budget['budget']} run_backtest calls "
+        f"({budget['tests_used']} used so far)."
+        if budget.get("budget_enforced", True)
+        else f"Backtest budget: not enforced ({budget['tests_used']} tests used so far)."
+    )
+    correction_text = (
+        "Every backtest you run is included in a multiple-testing correction at the end of "
+        "the session, so fewer, better-motivated tests are better than many variations."
+        if budget.get("correction_applied", True)
+        else "Multiple-testing correction: disabled for this unguarded experiment."
+    )
 
     lines = [
         f"# Research task (system {session.system})",
@@ -87,8 +99,7 @@ def build_task_brief(session: ResearchSession) -> str:
         f"inspect_results breakdowns: {_join(options['breakdowns'])}.",
         "",
         "## Limits",
-        f"Backtest budget: {budget['budget']} run_backtest calls "
-        f"({budget['tests_used']} used so far).",
+        budget_text,
     ]
     if min_events is not None:
         lines.append(
@@ -96,8 +107,7 @@ def build_task_brief(session: ResearchSession) -> str:
             "count as findings."
         )
     lines += [
-        "Every backtest you run is included in a multiple-testing correction at the end of "
-        "the session, so fewer, better-motivated tests are better than many variations.",
+        correction_text,
         "",
         "## Reporting",
         "- Only signals you defined and backtested can be reported.",

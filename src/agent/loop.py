@@ -5,6 +5,7 @@ from agent.llm import LLMClient, assistant_message
 from agent.prompts import SYSTEM_PROMPT, build_task_brief, prompt_version
 from agent.session import ResearchSession
 from agent.tools import dispatch_calls, schemas_for
+from harness.limits import ResourceLimitReached
 
 NUDGE = (
     "You have not called finish. Continue your research with the tools, "
@@ -27,7 +28,11 @@ def run_session(session: ResearchSession, client: LLMClient) -> list[FindingClai
     try:
         while session.step < max_steps:
             session.step += 1
-            response = client.complete(SYSTEM_PROMPT, messages, tools)
+            try:
+                response = client.complete(SYSTEM_PROMPT, messages, tools)
+            except ResourceLimitReached as limit:
+                reason = limit.reason
+                break
             session.trace.model_turn(session.step, response)
             messages.append(assistant_message(response))
             input_tokens += response.usage.total_input_tokens

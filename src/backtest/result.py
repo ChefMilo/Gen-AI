@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backtest.portfolio import PortfolioResult
 from dsl.signal import SignalSpec
 
 
@@ -49,3 +50,5 @@ class BacktestResult(BaseModel):
     t_stat: float | None = None
     p_value_raw: float | None = Field(default=None, ge=0, le=1)
     hit_rate: float | None = Field(default=None, ge=0, le=1)
+
+    portfolio: PortfolioResult | None = None

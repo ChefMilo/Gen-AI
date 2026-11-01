@@ -1,5 +1,6 @@
 """Research-period access, backtest budgets, and audit logging."""
 
+import copy
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -10,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent.finding import EvidenceQuote, Finding, System
 from backtest.engine import run_event_study
+from backtest.portfolio import PortfolioConfig, deflated_sharpe, simulate_portfolio
 from dsl.signal import SignalSpec
 from harness.corrections import holm_adjust
 from store.prices import first_tradeable_date
@@ -23,6 +25,7 @@ class HarnessConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     correction_family: Literal["budget", "attempted"] = "budget"
     mode: Literal["guarded", "unguarded"] = "guarded"
+    portfolio: PortfolioConfig | None = None
 
     research_start: date
     research_end: date
@@ -130,6 +133,7 @@ class ResearchBacktester:
         self._attempts: list[dict] = []
         self._audit_sequence = 0
         self._closed = False
+        self._portfolio_reports: dict[str, dict] = {}
 
         required = {
             "first_tradeable_date",
@@ -147,6 +151,9 @@ class ResearchBacktester:
 
         visible = event_days.ge(start) & event_days.le(end) & acceptance_days.le(end)
         self._events = events.loc[visible].copy(deep=True)
+        for column in self._events.columns:
+            if self._events[column].dtype == object:
+                self._events[column] = self._events[column].map(copy.deepcopy)
         validate_event_timing(self._events, benchmarks)
 
         # Keep earlier price history, but never prices after the cutoff.
@@ -167,6 +174,17 @@ class ResearchBacktester:
             "session_start",
             config=config.model_dump(mode="json"),
         )
+
+    @property
+    def configuration(self) -> HarnessConfig:
+        """Read-only controller settings; never an agent tool."""
+        return self._config
+
+    def research_events(self) -> pd.DataFrame:
+        """Controller-only isolated event snapshot for binding data ports."""
+        from harness.data_access import snapshot_events
+
+        return snapshot_events(self._events)
 
     def _require_open(self) -> None:
         if self._closed:
@@ -212,10 +230,12 @@ class ResearchBacktester:
         )
         return signal_id
 
-    def budget_status(self) -> dict[str, int]:
+    def budget_status(self) -> dict[str, int | bool]:
         return {
             "budget": self._config.budget,
             "tests_used": len(self._attempts),
+            "budget_enforced": self._config.mode == "guarded",
+            "correction_applied": self._config.mode == "guarded",
         }
 
     def run(self, signal_id: str) -> dict:
@@ -229,10 +249,7 @@ class ResearchBacktester:
             )
             raise GuardrailError(f"Unknown signal: {signal_id}")
 
-        if (
-            self._config.mode == "guarded"
-            and len(self._attempts) >= self._config.budget
-        ):
+        if self._config.mode == "guarded" and len(self._attempts) >= self._config.budget:
             self._record(
                 "run_rejected",
                 signal_id=signal_id,
@@ -260,6 +277,17 @@ class ResearchBacktester:
                 signal_id,
                 min_events=self._config.min_events,
             )
+            if self._config.portfolio is not None:
+                result.portfolio = simulate_portfolio(
+                    self._prices,
+                    self._benchmarks,
+                    self._events,
+                    self._specs[signal_id],
+                    self._config.portfolio,
+                    self._config.research_start,
+                    self._config.research_end,
+                )
+                attempt["portfolio_daily_sharpe"] = result.portfolio.summary["sharpe_daily"]
         except Exception as error:
             attempt["status"] = "error"
             self._record(
@@ -317,8 +345,7 @@ class ResearchBacktester:
 
             if is_unguarded_system != is_unguarded_config:
                 raise GuardrailError(
-                    "R3-U requires unguarded mode; "
-                    "other systems require guarded mode"
+                    "R3-U requires unguarded mode; other systems require guarded mode"
                 )
 
             claimed_ids = [claim.signal_id for claim in request.claims]
@@ -361,6 +388,24 @@ class ResearchBacktester:
             adjusted = list(p_values)
 
         findings = []
+        if self._config.portfolio is not None:
+            trial_sharpes = [
+                attempt["portfolio_daily_sharpe"]
+                for attempt in self._attempts
+                if attempt.get("portfolio_daily_sharpe") is not None
+            ]
+            for signal_id, result in self._results.items():
+                portfolio = result.get("portfolio")
+                if portfolio is None:
+                    continue
+                report = copy.deepcopy(portfolio["summary"])
+                report["deflated_sharpe"] = deflated_sharpe(
+                    [row["net_return"] for row in portfolio["daily"]],
+                    trial_sharpes,
+                    max(family_size, len(self._attempts)),
+                    self._config.portfolio,
+                )
+                self._portfolio_reports[signal_id] = report
 
         for claim in request.claims:
             result = self._results[claim.signal_id]
@@ -407,6 +452,7 @@ class ResearchBacktester:
             tests_used=len(self._attempts),
             correction_family=self._config.correction_family,
             family_size=family_size,
+            portfolio_reports=self._portfolio_reports,
             findings=[finding.model_dump(mode="json") for finding in findings],
         )
         return findings
@@ -507,3 +553,11 @@ class ResearchBacktester:
             "descriptive_only": True,
             "groups": groups,
         }
+
+    def portfolio_reports(self) -> dict[str, dict]:
+        """Controller-only diagnostics after finalization; not a model search tool."""
+        if not self._closed:
+            raise GuardrailError(
+                "Portfolio search diagnostics are available only after finalization"
+            )
+        return copy.deepcopy(self._portfolio_reports)
