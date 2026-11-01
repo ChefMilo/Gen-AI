@@ -38,3 +38,14 @@ rag:
         excess_capital: returning excess capital or strong free cash flow to shareholders
         offset_dilution: offsetting dilution from equity compensation or share issuance
         unspecified: no reason given beyond the authorization itself
+
+agent:
+  model: null  # null = use $AGENT_MODEL
+  max_steps: 60  # model turns per session
+  max_session_input_tokens: 400000  # cached and uncached input, summed over turns
+  max_tokens: 16000  # per model response, thinking included
+  effort: null  # null = provider default; else low | medium | high | xhigh | max
+  thinking_display: summarized  # summarized | omitted | null (= model default)
+  tool_result_max_chars: 4000  # longer tool results are truncated
+  cache_dir: results/llm_cache
+  trace_dir: results/traces

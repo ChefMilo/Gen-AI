@@ -13,6 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
+agent = ["anthropic>=2.1", "python-dotenv>=1.2"]
 rag = ["sentence-transformers>=3.0"]
 
 [tool.pytest.ini_options]
