@@ -1,29 +1,32 @@
 # Gold set: hand-labelled events
 
-30 filings, labelled by hand, for measuring the LLM event extraction (`events.parquet`).
-The same 30 compare candidate models (for example Haiku vs Sonnet) before the full run.
+60 filings, labelled by hand, for measuring the LLM event extraction (`events.parquet`).
+15 of them are labelled a second time, independently, to report how often two people agree.
 
 **Label by reading the filing yourself. Don't paste an LLM's answer in here**, or the
 gold set ends up grading the model against itself.
 
 | File | What it holds |
 |---|---|
-| `filings.csv` | The 30 filings: ids, links, why each was picked, and labelling status |
+| `filings.csv` | The 60 filings: ids, links, why each was picked, and labelling status |
 | `events.csv` | One row per event found in them (empty until labelled) |
+| `events_second.csv` | The second labeller's rows for the 15 filings with `double` = `yes` |
 
-`src/ingest/gold.py` loads both, checks them and scores extracted events against them.
+`src/ingest/gold.py` loads these, checks them, scores extracted events against them and
+measures agreement between the two labellers.
 
-## How the 30 were picked
+## How the 60 were picked
 
 From the dividend and buyback candidates in `index/filing_index.parquet`, keep and
 keep_from companies only, one filing per company:
 
-- **Cases:** plain, increased, special and first-ever dividends; new, increased,
+- **Cases:** plain, increased, cut, special and first-ever dividends; new, increased,
   share-based and suspended buybacks; filings with both; earnings releases that only
-  report past activity; and filings that match the keywords but announce nothing
-  (covenants, charter wording, preferred stock terms).
-- **Spread:** every year from 2016 to 2026 (7 filings in 2024 or later, the proposed
-  holdout), 16 small and 14 mid companies, 8 sectors.
+  report past or "previously announced" activity; 5 amendments (8-K/A); and filings that
+  match the keywords but announce nothing (covenants, charter wording, investor slides,
+  preferred stock terms).
+- **Spread:** every year from 2016 to 2026 (25 filings in 2023 or later, the holdout),
+  30 small and 30 mid companies, 9 sectors.
 
 The `note` column says what makes each one tricky. It is a hint, not the answer.
 
@@ -40,11 +43,18 @@ The `note` column says what makes each one tricky. It is a hint, not the answer.
 5. A second person reads the filing, fixes anything they disagree with, and sets
    `status` to `checked` and `checked_by`.
 
+**The 15 double-labelled filings** (`double` = `yes`) are labelled twice, separately. The
+second labeller doesn't look at `events.csv` for them first. They put their rows in
+`events_second.csv`, then set `second_status` to `labelled` and `second_by` to their
+name (`second_status` `labelled` with no rows means they found no events). Only then is
+the filing checked as in step 5, so the agreement number reflects two independent reads.
+
 ## Rules
 
 - **Common stock only.** Preferred-stock dividends are not events.
 - **is_new_announcement:** `True` if this filing announces the decision for the first
-  time (the board declares or approves it now). `False` if the text says "previously
+  time (the board declares or approves it now). An 8-K/A that repeats an event from its
+  original 8-K is `False`; it is `True` only if the amendment adds a new decision. `False` if the text says "previously
   announced", or only reports what already happened ("declared and paid during the
   quarter", "repurchased 1.2 million shares"). If an earnings release says a dividend was
   "recently declared", look for an earlier 8-K from the company in `filing_index`.
@@ -82,5 +92,13 @@ result = gold.score(filings, labels, extracted_events)  # store.schema.Event row
 ```
 
 Only `labelled` and `checked` filings count. Events pair up within a filing and event type.
-The result has event precision and recall, accuracy per field, and the share of filings
-that are entirely right.
+The result has event precision, recall and F1; per field, the share of paired events
+that are exactly right and precision, recall and F1; the share of filings that are
+entirely right; and the share of extracted events that were flagged.
+
+Agreement between the two labellers, on the finished double-labelled filings:
+
+```python
+second = gold.load_events(name=gold.SECOND_EVENTS)
+gold.agreement(filings, labels, second)  # same measures, second labeller vs first
+```

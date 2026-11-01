@@ -10,7 +10,7 @@ All data lives in the shared Drive folder Gen AI/Data/. Filings and prices are r
 
 4.  **Which companies, from when:** follow universe_quality.csv (recommendation, usable_from).
 
-5.  **Period:** 2016-01-01 to 2026 (partial year). Prices start in 2015 for look-back windows.
+5.  **Period:** 2016-01-01 to 2026 (partial year). Prices start in 2015 for look-back windows. Research period 2016-01-01 to 2022-12-31; holdout from 2023-01-01 (configs/default.yaml).
 
 ## **Companies: universe.csv and universe_quality.csv**
 
