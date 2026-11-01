@@ -139,7 +139,9 @@ class AgentResearchSystem:
         findings, report = claims_to_findings(
             session.claims, ports.backtester.attempts, session_id=session.session_id,
             system=self.system, alpha=float(self.config.get("alpha", 0.05)),
-            correct=self.system != "R3-U",
+            correct=self.system != "R3-U", aliases=ports.backtester.aliases,
+            specs={sid: s.model_dump(mode="json") for sid, s in ports.backtester.specs.items()},
+            viewed_groups=ports.backtester.viewed_groups,
         )
         start_event = session.trace.events[0]
         end_event = session.trace.events[-1]
@@ -159,6 +161,14 @@ class AgentResearchSystem:
             "invalid_calls": totals["invalid_calls"],
             "inspect_results_calls": len(_tool_events(session, "inspect_results")),
             "breakdown_groups_viewed": breakdown_groups_viewed(session),
+            "duplicate_backtests": ports.backtester.duplicates,
+            "strict_family_size": report["strict"]["family_size"],
+            "findings_passed_strict": report["strict"]["findings_passed_strict"],
+            "strict_correction": [
+                {k: c.get(k) for k in ("finding_id", "signal_id", "p_value_corrected",
+                                       "p_value_corrected_strict", "passed_correction",
+                                       "passed_correction_strict")}
+                for c in report["claims"] if c["returned"]],
             "token_breakdown": tokens,
             "steps": totals["steps"],
             "budget": budget,

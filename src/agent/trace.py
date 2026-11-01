@@ -129,6 +129,8 @@ class Trace:
             "backtests_linked_to_hypothesis": sum(e.get("hypothesis_id") is not None
                                                   for e in backtests),
             "backtests_unlinked": sum(e.get("hypothesis_id") is None for e in backtests),
+            # run_backtest calls that repeated an earlier test's events (not counted)
+            "duplicate_backtests": sum(e.get("duplicate_of") is not None for e in backtests),
             "hypotheses_recorded": sum(e["entry_kind"] == "hypothesis" for e in notes),
             "hypotheses_with_claim": len(claimed - {None}),
             # evidence grounding: quotes that are exact substrings of earlier tool results

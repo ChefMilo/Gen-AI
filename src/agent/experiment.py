@@ -21,6 +21,7 @@ universe_type map privately, only to refuse real universes without research_end.
 """
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -31,7 +32,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.config import load_config
-from agent.system import AGENT_SYSTEMS
+from agent.system import AGENT_SYSTEMS, TOKEN_FIELDS
 from evaluation import systems as runner_systems
 from evaluation.plan import (
     EXPERIMENT_CONFIG_PATH,
@@ -45,10 +46,12 @@ from evaluation.plan import (
 )
 from evaluation.run import (
     PLAN_FILE,
+    RUN_META,
     ExperimentOutcome,
     default_out_dir,
     evaluate_runs,
     load_base_data,
+    run_dir,
     run_systems,
     write_summary,
 )
@@ -208,7 +211,31 @@ def report(outcome: ExperimentOutcome, out_dir: Path) -> str:
     if outcome.tables is not None:
         cols = ["system", "recall", "precision", "mean_false_discoveries"]
         lines.append(system_summary(outcome.tables, n_boot=1)[cols].to_string(index=False))
+    lines += token_report(outcome, out_dir)
     return "\n".join(lines)
+
+
+def token_report(outcome: ExperimentOutcome, out_dir: Path) -> list[str]:
+    """Agent tokens by type per system over this run's pairs (ran or skipped), and the
+    cost when every session has one (agent.pricing set for its model)."""
+    by_system: dict[str, list[dict]] = {}
+    for p in outcome.pairs:
+        meta_path = run_dir(out_dir, p.system, p.universe_id) / RUN_META
+        if p.status == "failed" or not meta_path.exists():
+            continue
+        meta = json.loads(meta_path.read_text(encoding="utf-8")).get("metadata", {})
+        if "token_breakdown" in meta:
+            by_system.setdefault(p.system, []).append(meta)
+    lines = []
+    for system, metas in by_system.items():
+        totals = {f: sum(m["token_breakdown"][f] for m in metas) for f in TOKEN_FIELDS}
+        costs = [m.get("cost_usd") for m in metas]
+        cost = (f"cost ${sum(costs):.2f}" if all(c is not None for c in costs)
+                else "cost n/a (set agent.pricing)")
+        lines.append(f"tokens {system} ({len(metas)} sessions): "
+                     + ", ".join(f"{f} {v:,}" for f, v in totals.items())
+                     + f", total {sum(totals.values()):,}; {cost}")
+    return lines
 
 
 def main(argv: list[str] | None = None) -> int:

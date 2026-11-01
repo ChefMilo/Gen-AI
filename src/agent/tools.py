@@ -307,8 +307,14 @@ def report_finding(session: ResearchSession, args: ReportFindingArgs) -> dict:
         raise ToolError(f"unknown signal_id {sid!r}. Defined signals: {known}")
     if sid not in session.tested_signals:
         raise ToolError(f"signal {sid!r} was never backtested; call run_backtest first")
-    if any(c.signal_id == sid for c in session.claims):
-        raise ToolError(f"a finding for {sid!r} was already reported; one claim per signal")
+    # A duplicate backtest makes a signal an alias of the one it repeats: one claim per
+    # underlying test, whichever id is reported (ports without aliases: the id itself).
+    canonical = getattr(session.backtester, "canonical", lambda s: s)
+    for c in session.claims:
+        if canonical(c.signal_id) == canonical(sid):
+            same = "" if c.signal_id == sid else f" (same events as {sid!r})"
+            raise ToolError(f"a finding for {c.signal_id!r}{same} was already reported; "
+                            "one claim per signal")
 
     grounding = ground_evidence(session, sid, args.evidence)
     claim = FindingClaim(

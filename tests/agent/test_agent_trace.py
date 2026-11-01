@@ -75,6 +75,7 @@ def test_totals():
         "stop_reasons": {"tool_use": 2, "end_turn": 1},
         "backtests_linked_to_hypothesis": 0,
         "backtests_unlinked": 1,
+        "duplicate_backtests": 0,
         "hypotheses_recorded": 0,
         "hypotheses_with_claim": 0,
         "evidence_quotes": 0,

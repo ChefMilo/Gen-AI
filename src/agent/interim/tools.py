@@ -49,6 +49,8 @@ def backtest_view(result: dict[str, Any], min_events: int | None) -> dict[str, A
     """What the model sees: rounded stats and budget, warnings, a few example event_ids."""
     view = rounded({k: result.get(k) for k in MODEL_BACKTEST_KEYS})
     warnings = []
+    if result.get("duplicate_of"):
+        warnings.append(f"duplicate of {result['duplicate_of']}: same events; not counted")
     if result["status"] != TESTED:
         warnings.append(f"not testable ({result['status']}); cannot be a finding")
     if min_events and result["n_events"] < min_events:
@@ -66,6 +68,7 @@ def run_backtest(session, args) -> dict:
     session.signal_event_ids[args.signal_id] = list(result["event_ids"])
     session.call_extra["event_ids"] = list(result["event_ids"])  # trace only, not the model
     session.call_extra["status"] = result["status"]
+    session.call_extra["duplicate_of"] = result.get("duplicate_of")
     view = backtest_view(result, session.config.get("min_events"))
     summary = (f"{args.signal_id}: n={view['n_events']}, mean CAR={view['mean_car']}, "
                f"t={view['t_stat']}, {view['status']}")

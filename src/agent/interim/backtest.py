@@ -18,7 +18,9 @@ terms:
   mean_car for long, -mean_car for short, and hit_rate is the share of events where the
   position made money. t_stat is the raw t (its p-value does not depend on direction).
 - Every run_backtest call is one test in the correction family (agent.interim.harness),
-  including reruns and untestable signals (at p = 1, as R0 counts them).
+  including untestable signals (at p = 1, as R0 counts them), except a duplicate: a
+  signal with the same measurable events and holding period as one already tested
+  (including a rerun) repeats that test, uses no budget and becomes its alias.
 """
 
 import math
@@ -110,7 +112,13 @@ class InterimBacktester:
         self.tests_used = 0
         self.specs: dict[str, Any] = {}
         self.results: dict[str, pd.DataFrame] = {}  # signal_id -> its latest run's CARs
-        self.attempts: list[dict[str, Any]] = []  # one per run_backtest call, in order
+        self.attempts: list[dict[str, Any]] = []  # one per counted test, in order
+        self.aliases: dict[str, str] = {}  # duplicate signal_id -> the signal it repeats
+        self.duplicates = 0  # run_backtest calls answered as duplicates (not counted)
+        self._tested: dict[tuple, str] = {}  # (measurable event_ids, holding_days) -> signal
+        # (signal, breakdown, group) -> raw p (None without a t-test): every subgroup the
+        # agent has seen, for the strict correction (measured, not enforced)
+        self.viewed_groups: dict[tuple[str, str, str], float | None] = {}
         self._breakdowns = breakdowns(events)
 
     def define(self, spec: dict[str, Any]) -> str:
@@ -124,13 +132,32 @@ class InterimBacktester:
             raise ToolError(f"unknown signal_id {signal_id!r}. Defined signals: {known}")
         return self.specs[signal_id]
 
+    def canonical(self, signal_id: str) -> str:
+        """The signal whose test a duplicate stands for (itself if not a duplicate)."""
+        return self.aliases.get(signal_id, signal_id)
+
     def run(self, signal_id: str) -> dict[str, Any]:
+        """Run the event study. A signal whose measurable events and holding period equal an
+        already-tested signal's (direction aside: the test is two-sided) is a duplicate: it
+        gets the same statistics, uses no budget, is not added to the correction family and
+        becomes an alias of that signal.
+
+        TODO(member-4): apply this duplicate rule to every system once the official
+        harness exists (R0 never repeats an event set, so it is unaffected today).
+        """
         spec = self._spec(signal_id)
-        if self.tests_used >= self.budget:
-            raise ToolError(f"testing budget exhausted ({self.budget} backtests used)")
-        self.tests_used += 1
         selected = select(self.events, spec)
         cars = finite_cars(event_cars(self.prices, self.benchmarks, selected, spec.holding_days))
+        key = (frozenset(cars["event_id"]), spec.holding_days)
+        original = self._tested.get(key)
+        if original is None and self.tests_used >= self.budget:
+            raise ToolError(f"testing budget exhausted ({self.budget} backtests used)")
+        if original is None:
+            self.tests_used += 1
+            self._tested[key] = signal_id
+        else:
+            self.aliases[signal_id] = original
+            self.duplicates += 1
         self.results[signal_id] = cars
         summary = summarize_returns(cars, self.min_events)
         sign = 1.0 if spec.direction == "long" else -1.0
@@ -150,13 +177,15 @@ class InterimBacktester:
             "event_ids": list(cars["event_id"]),  # all of them, measurable only (as R0)
             "tests_used": self.tests_used,
             "budget_remaining": self.budget - self.tests_used,
+            "duplicate_of": original,
         }
-        self.attempts.append({
-            "test_index": self.tests_used, "signal_id": signal_id,
-            "spec": spec.model_dump(mode="json"),
-            **{k: result[k] for k in ("status", "n_events", "mean_car", "t_stat",
-                                      "p_value_raw", "event_ids")},
-        })
+        if original is None:
+            self.attempts.append({
+                "test_index": self.tests_used, "signal_id": signal_id,
+                "spec": spec.model_dump(mode="json"),
+                **{k: result[k] for k in ("status", "n_events", "mean_car", "t_stat",
+                                          "p_value_raw", "event_ids")},
+            })
         return result
 
     def breakdown(self, signal_id: str, by: str) -> dict[str, Any]:
@@ -171,7 +200,11 @@ class InterimBacktester:
         else:
             keys = cars["event_id"].map(self.events.set_index("event_id")[by])
         sign = 1.0 if spec.direction == "long" else -1.0
-        groups = {str(k): rounded(group_stats(g["car"], sign)) for k, g in cars.groupby(keys)}
+        stats_by_group = {str(k): group_stats(g["car"], sign) for k, g in cars.groupby(keys)}
+        for group, s in stats_by_group.items():  # for the strict correction (harness)
+            if s["n_events"] and s["mean_car"] is not None:
+                self.viewed_groups[(self.canonical(signal_id), by, group)] = s["p_value_raw"]
+        groups = {k: rounded(s) for k, s in stats_by_group.items()}
         return {"signal_id": signal_id, "by": by, "groups": groups}
 
     def signal_options(self) -> dict[str, Any]:

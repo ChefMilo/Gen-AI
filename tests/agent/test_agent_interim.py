@@ -118,16 +118,72 @@ def test_summarize_returns_matches_r0_rules():
 # --- Budget, options, breakdowns ------------------------------------------------------
 
 
-def test_budget_counts_every_run_and_then_refuses(view, registry):
+def test_budget_counts_every_distinct_test_and_then_refuses(view, registry):
     ports = ports_for(view, registry, budget=2)
     bt = ports.backtester
-    sig = bt.define(RAISE)
-    bt.run(sig)
-    bt.run(sig)  # a rerun is another test
+    bt.run(bt.define(RAISE))
+    bt.run(bt.define({"event_type": "buyback"}))
     with pytest.raises(ToolError, match="budget exhausted"):
-        bt.run(sig)
+        bt.run(bt.define({"event_type": "dividend"}))
     assert bt.budget_status() == {"budget": 2, "tests_used": 2}
     assert len(bt.attempts) == 2
+
+
+# --- Duplicate backtests --------------------------------------------------------------
+
+
+def test_long_and_short_of_the_same_spec_are_one_test(view, registry):
+    ports = ports_for(view, registry, budget=1)
+    bt = ports.backtester
+    long = bt.run(bt.define(RAISE))
+    short = bt.run(bt.define({**RAISE, "direction": "short"}))  # budget is already used up
+    assert short["duplicate_of"] == "sig-1" and long["duplicate_of"] is None
+    assert (short["p_value_raw"], short["mean_car"]) == (long["p_value_raw"], long["mean_car"])
+    assert short["position_mean_car"] == -long["position_mean_car"]
+    assert bt.tests_used == 1 and len(bt.attempts) == 1 and bt.duplicates == 1
+    assert bt.canonical("sig-2") == "sig-1"
+    bt.run("sig-1")  # a rerun of the same signal is a duplicate too
+    assert bt.tests_used == 1 and bt.duplicates == 2
+
+
+def test_different_specs_with_identical_events_are_duplicates(view, registry):
+    ports = ports_for(view, registry)
+    bt = ports.backtester
+    bt.run(bt.define(RAISE))
+    same = bt.run(bt.define({"event_type": "dividend", "conditions": [
+        {"field": "dividend_change_pct", "op": ">", "value": 10},
+        {"field": "dividend_change_pct", "op": ">", "value": 9.99}]}))
+    assert same["duplicate_of"] == "sig-1"
+    other = bt.run(bt.define({"event_type": "dividend", "conditions": [
+        {"field": "dividend_change_pct", "op": ">", "value": 20}]}))
+    assert other["duplicate_of"] is None and bt.tests_used == 2
+
+
+def test_duplicate_leaves_budget_and_holm_unchanged(view, registry):
+    ports = ports_for(view, registry)
+    s = session_for(ports)
+    dispatch(s, "define_signal", {"spec": RAISE})
+    dispatch(s, "define_signal", {"spec": {**RAISE, "direction": "short"}})
+    dispatch(s, "run_backtest", {"signal_id": "sig-1"})
+    content, is_error = dispatch(s, "run_backtest", {"signal_id": "sig-2"})
+    out = json.loads(content)
+    assert not is_error and "duplicate of sig-1: same events; not counted" in out["warnings"]
+    assert out["tests_used"] == 1 and out["budget_remaining"] == 14
+    content, is_error = dispatch(s, "report_finding", {
+        "signal_id": "sig-2", "rationale": "r", "evidence": [{"doc_ref": "x", "quote": "q"}]})
+    assert not is_error, content
+    content, is_error = dispatch(s, "report_finding", {
+        "signal_id": "sig-1", "rationale": "r", "evidence": [{"doc_ref": "x", "quote": "q"}]})
+    assert is_error and "one claim per signal" in content  # same underlying test
+    bt = ports.backtester
+    findings, report = claims_to_findings(
+        s.claims, bt.attempts, session_id="s", system="R2", alpha=0.05, aliases=bt.aliases,
+        specs={k: v.model_dump(mode="json") for k, v in bt.specs.items()})
+    assert report["tests_in_family"] == 1
+    f = findings[0]
+    assert f.p_value_corrected == f.p_value_raw  # a family of one: Holm = raw
+    assert f.direction == "short" and f.signal_id == "s-sig-2"
+    assert s.trace.totals()["duplicate_backtests"] == 1
 
 
 def test_signal_options_offer_only_what_the_data_has(view, registry):

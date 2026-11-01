@@ -15,6 +15,7 @@ from agent.experiment import (
     register_agent_systems,
     run_dev_experiment,
 )
+from agent.finding import Finding
 from agent.llm import CachedClient, FakeLLM, LLMResponse, ToolCall, Usage
 from agent.system import (
     AgentResearchSystem,
@@ -31,7 +32,8 @@ EXPECTED_METADATA = {
     "backtests_used", "tool_calls", "tokens", "cost_usd", "wall_time_s", "trace_path",
     "model", "prompt_version", "end_reason", "invalid_calls", "inspect_results_calls",
     "breakdown_groups_viewed", "signal_specs", "token_breakdown", "research_end",
-    "warnings", "mask_dates_in_text", "seed", "budget", "harness",
+    "warnings", "mask_dates_in_text", "seed", "budget", "harness", "duplicate_backtests",
+    "strict_family_size", "findings_passed_strict", "strict_correction",
 }
 PRICING = {"test-model": {"input": 3.0, "cache_read": 0.3, "cache_write": 3.75, "output": 15.0}}
 
@@ -316,3 +318,70 @@ def test_the_shipped_dev_config_is_dev_only():
     check_dev_only(cfg, data.events)  # no final-grid spec, no final-plan seed
     plan = build_dev_plan(cfg, data)
     assert [u.universe_id for u in plan.universes] == [f"dev_u0{k}" for k in range(1, 6)]
+
+
+# --- Strict correction (item 15): measured, not enforced ------------------------------
+
+BROAD = [{"field": "dividend_change_pct", "op": ">", "value": 10}]
+NARROW = [*BROAD, {"field": "mcap_bucket", "op": "==", "value": "small"}]
+BREAKDOWN_PATH = [
+    turn(("record_hypothesis", {"hypothesis": "Dividend raises", "rationale": "signalling"})),
+    turn(("define_signal", {"spec": {"event_type": "dividend", "conditions": BROAD}})),
+    turn(("run_backtest", {"signal_id": "sig-1"})),  # broad: fails
+    turn(("inspect_results", {"signal_id": "sig-1", "by": "mcap_bucket"})),  # 3 groups seen
+    turn(("record_hypothesis", {"hypothesis": "Small caps drive it", "rationale": "coverage"})),
+    turn(("define_signal", {"spec": {"event_type": "dividend", "conditions": NARROW},
+                            "hypothesis_id": "h2"})),
+    turn(("run_backtest", {"signal_id": "sig-2"})),  # narrower: passes the official Holm
+    turn(("report_finding", {"signal_id": "sig-2", "rationale": "small caps",
+                             "evidence": [{"doc_ref": "x", "quote": "raised"}]})),
+    turn(("finish", {"reason": "done"})),
+]
+
+
+@pytest.fixture(scope="module")
+def breakdown_view():
+    """A small universe (found by search) where the dev_u04 path plays out: the broad
+    test fails, the small-cap breakdown stands out, the narrower test passes Holm over
+    2 tests and fails it once the 3 viewed groups are counted."""
+    from universes.fake_events import make_fake_events
+    from universes.planted import PlantSpec, make_planted
+    from universes.synthetic import make_synthetic_benchmarks, make_synthetic_prices
+
+    start, end, seed = date(2015, 1, 1), date(2020, 12, 31), 9709
+    prices = make_synthetic_prices([f"T{i:03d}" for i in range(40)], start, end, seed=seed)
+    benchmarks = make_synthetic_benchmarks(start, end, seed=seed)
+    events = make_fake_events(prices, seed=seed)
+    spec = PlantSpec(spec_id="dev_test_small_raise", event_type="dividend",
+                     condition='dividend_change_pct > 10 and mcap_bucket == "small"',
+                     effect=0.01, strength="moderate", complexity="conjunction",
+                     feature_type="structured")
+    planted, _ = make_planted(prices, events, spec, min_events=20, benchmarks=benchmarks)
+    return make_view("dev_u99", planted, benchmarks, events, date(2016, 1, 1), None)
+
+
+def test_breakdown_path_passes_officially_and_fails_strict(breakdown_view, registry):
+    system = AgentResearchSystem("R2", config=agent_config(trace_dir=None),
+                                 client_factory=Clients(BREAKDOWN_PATH),
+                                 universe_types={"dev_u99": "planted"})
+    run = system.run(breakdown_view, 15, 1)
+    meta = run.metadata
+    [finding] = run.findings
+    assert finding.passed_correction  # official: Holm over the 2 backtests
+    assert finding.p_value_corrected == pytest.approx(2 * finding.p_value_raw)
+    [strict] = meta["strict_correction"]
+    assert strict["passed_correction"] and not strict["passed_correction_strict"]
+    assert strict["p_value_corrected_strict"] > 0.05 > strict["p_value_corrected"]
+    assert meta["strict_family_size"] == 5 and meta["breakdown_groups_viewed"] == 3
+    assert meta["findings_passed_strict"] == 0 and meta["duplicate_backtests"] == 0
+    assert "p_value_corrected_strict" not in Finding.model_fields  # Finding is unchanged
+
+
+def test_summary_prints_tokens_by_type_and_cost(r2_run):
+    from agent.experiment import report
+
+    outcome, out, _ = r2_run
+    text = report(outcome, out)
+    line = next(x for x in text.splitlines() if x.startswith("tokens r2"))
+    assert "(2 sessions)" in line and "cache_read_input_tokens 12,000" in line
+    assert "total 16,200" in line and "cost $" in line
