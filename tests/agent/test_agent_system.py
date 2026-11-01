@@ -302,3 +302,17 @@ def test_cost_needs_a_priced_model():
     assert cost_usd("test-model", tokens, PRICING) == pytest.approx(18.0)
     assert cost_usd("other", tokens, PRICING) is None
     assert cost_usd("test-model", tokens, {}) is None
+
+
+def test_the_shipped_dev_config_is_dev_only():
+    from pathlib import Path
+
+    from agent.config import REPO_ROOT
+    from agent.experiment import load_dev_config
+
+    cfg = load_dev_config(Path(REPO_ROOT, "configs", "experiment_agent_dev.yaml"))
+    assert (len(cfg.dev.planted), len(cfg.dev.placebo)) == (2, 3)
+    data = load_base_data(cfg.experiment.resolved())
+    check_dev_only(cfg, data.events)  # no final-grid spec, no final-plan seed
+    plan = build_dev_plan(cfg, data)
+    assert [u.universe_id for u in plan.universes] == [f"dev_u0{k}" for k in range(1, 6)]

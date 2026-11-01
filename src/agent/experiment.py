@@ -2,6 +2,7 @@
 
     python -m agent.experiment --config configs/experiment_agent_dev.yaml --systems null,random
     python -m agent.experiment --config configs/experiment_agent_dev.yaml --systems r0,r2,r3
+    python -m agent.experiment --config ... --systems r2,r3 --out results/dev_agent_v2
 
 The runner's own CLI (python -m evaluation.run) does not import agent code, so it cannot
 see the agent systems; this entry point registers them and then drives the runner's
@@ -215,7 +216,8 @@ def main(argv: list[str] | None = None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, required=True, help="a dev experiment config")
     parser.add_argument("--systems", help="comma-separated system names; default: config")
-    parser.add_argument("--out-dir", type=Path, help="default: results/<experiment_id>")
+    parser.add_argument("--out", "--out-dir", dest="out_dir", type=Path, metavar="DIR",
+                        help="output folder (default: results/<experiment_id>)")
     parser.add_argument("--dry-run", action="store_true", help="plan and build universes only")
     parser.add_argument("--no-resume", action="store_true", help="rerun finished pairs")
     parser.add_argument("--model", help="agent model for this run (overrides AGENT_MODEL)")

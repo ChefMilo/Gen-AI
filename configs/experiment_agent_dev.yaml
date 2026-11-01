@@ -1,12 +1,12 @@
 # DEV ONLY: specs and seeds here must not be used in the final evaluation.
 #
 # A tiny plan for developing the agent systems inside the experiment runner:
-# 2 planted universes (one dev spec each) and 1 placebo, on dev-only data and seeds.
+# 2 planted universes (one dev spec each) and 3 placebo, on dev-only data and seeds.
 # agent.experiment refuses dev specs that are in the final spec grid and seeds that the
 # final plan (configs/experiment.yaml) uses.
 #
 #   python -m agent.experiment --config configs/experiment_agent_dev.yaml --systems null,random
-#   python -m agent.experiment --config configs/experiment_agent_dev.yaml --systems r2,r3
+#   python -m agent.experiment --config configs/experiment_agent_dev.yaml --systems r2,r3 --out results/dev_agent_v2
 
 experiment:  # evaluation.plan.ExperimentConfig; unset keys come from configs/default.yaml
   experiment_id: dev_agent_v1
@@ -55,3 +55,5 @@ dev:
           feature_type: text
   placebo:
     - seed: 9101
+    - seed: 9102
+    - seed: 9103

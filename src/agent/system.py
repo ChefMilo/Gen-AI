@@ -187,6 +187,7 @@ class R3System(AgentResearchSystem):
         super().__init__("R3", **kwargs)
 
 
+# R3-U uses R3's exact prompt on purpose; only the harness differs (budget, no correction).
 class R3USystem(AgentResearchSystem):
     def __init__(self, **kwargs: Any):
         super().__init__("R3-U", **kwargs)
