@@ -105,9 +105,14 @@ first_tradeable_date(acceptance_et) # SEC acceptance time (US Eastern) -> first 
 # before 16:00 ET on a trading day = same day, else next trading day
 ```
 
-## **Event store: events.parquet (coming next)**
+## **Event store: events/events.parquet**
 
-One row per dividend or buyback event, produced by LLM extraction from the candidate filings. One filing can produce several events. **Use only rows with is_new_announcement = True and extraction_status = "passed".** Until it's ready, Backtest and Evaluation can build against fake events with these columns.
+One row per dividend or buyback event, produced by LLM extraction from the candidate filings (`src/ingest/`, `python -m ingest.run`). One filing can produce several events. **Use only rows with is_new_announcement = True and extraction_status = "passed"**, which is what `store.events.load_events()` returns by default (also only keep / keep_from companies from their usable_from date). It has the same columns as the fake events, so code built on them works unchanged.
+
+```python
+from store.events import load_events
+load_events(start=None, end=None, usable_only=True)  # -> DataFrame, filtered on first_tradeable_date
+```
 
 | **Field**                                    | **Type**                    | **Example**                    | **Notes**                                                                                             |
 |----------------------------------------------|-----------------------------|--------------------------------|-------------------------------------------------------------------------------------------------------|
@@ -118,7 +123,7 @@ One row per dividend or buyback event, produced by LLM extraction from the candi
 | acceptance_datetime                          | datetime (US Eastern)       |                                | when SEC received the filing                                                                          |
 | first_tradeable_date                         | date                        |                                | **the event date for backtests**; same day if before 16:00 ET on a trading day, else next trading day |
 | announcement_date                            | date, optional              |                                | date stated in the text                                                                               |
-| is_new_announcement                          | bool                        | True                           | False = only reports past activity                                                                    |
+| is_new_announcement                          | bool                        | True                           | False = only reports past activity, or a repeat of an event already filed (flag duplicate_of:<event_id>) |
 | dividend_per_share                           | number (USD)                | 0.10                           | "10 cents" becomes 0.10                                                                               |
 | dividend_kind                                | regular / special / initial | special                        |                                                                                                       |
 | record_date, payable_date                    | date, optional              |                                | usually stated                                                                                        |
@@ -130,6 +135,7 @@ One row per dividend or buyback event, produced by LLM extraction from the candi
 | buyback_expiry                               | date, optional              |                                |                                                                                                       |
 | buyback_pct_mcap                             | number                      | 2.1                            | derived: amount ÷ market cap × 100                                                                    |
 | mcap_usd, mcap_bucket                        | number, small / mid / large |                                | derived, day before first_tradeable_date                                                              |
+| sector                                       | text                        | Industrials                    | from universe.csv                                                                                     |
 | text_features                                | object                      |                                | filled by Retrieval, e.g. buyback_rationale, dividend_framing; each a label + exact quote             |
 | evidence                                     | object                      |                                | exact quote behind each extracted field                                                               |
 | extraction_status, flags                     | passed / flagged, list      |                                | why an event was flagged                                                                              |
@@ -141,9 +147,11 @@ One row per dividend or buyback event, produced by LLM extraction from the candi
 
 2.  Every extracted value needs an exact quote in evidence, or the event is flagged.
 
-3.  Sanity checks: dividend between \$0.001 and \$50 per share; buyback amount positive; record date on or before payable date.
+3.  Sanity checks: dividend between \$0.001 and \$50 per share; buyback amount positive; record date on or before payable date; a new dividend is not paid before the filing date. A failed check gets one retry with the problems, then the event is flagged.
 
-Open questions: which LLM API to use, and the final text-feature labels from Retrieval.
+4.  The model (Sonnet 5.5) sees only the sentences mentioning dividends or buybacks, one sentence either side (about a tenth of a filing). Replies are cached in results/extract/.
+
+Open question: the final text-feature labels from Retrieval.
 
 ## **Known limitations (for the report)**
 

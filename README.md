@@ -41,3 +41,19 @@ caffeinate -i python -m rag.build
 ```
 
 An index only loads with the embedding model it was built with.
+
+## Event extraction
+
+`src/ingest/` builds `events/events.parquet` on the shared Drive from the candidate filings, with Claude via the Anthropic API. Put `ANTHROPIC_API_KEY` in `.env`; `EXTRACT_MODEL` picks the model (default: `AGENT_MODEL`, else `claude-sonnet-5-5`).
+
+```
+pip install -e .[llm]
+python -m ingest.run estimate      # filings, tokens and cost; no API calls
+python -m ingest.run gold          # the gold filings (data/gold/), scored against the labels
+python -m ingest.run submit        # all candidates via the Batch API (half price)
+python -m ingest.run status
+python -m ingest.run collect       # fetch, retry, derive, save events.parquet
+```
+
+`--limit N` runs the first N filings only (saved under `results/extract/`, not to Drive). Replies are cached in `results/extract/`, so reruns are free.
+
