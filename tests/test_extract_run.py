@@ -125,7 +125,7 @@ def test_run_extraction_builds_derived_events(data):
     assert e["event_id"] == f"{ACC}-dividend-1" and e["extraction_status"] == "passed"
     assert e["first_tradeable_date"] == date(2024, 5, 2)
     assert e["mcap_usd"] == 1e9 and e["sector"] == "Industrials"
-    assert e["extractor_version"] == "extract-1.0+m"
+    assert e["extractor_version"] == "extract-1.1+m"
 
 
 def test_run_extraction_records_failed_filings(data):

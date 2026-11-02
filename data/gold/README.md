@@ -52,11 +52,14 @@ the filing checked as in step 5, so the agreement number reflects two independen
 ## Rules
 
 - **Common stock only.** Preferred-stock dividends are not events.
+- **Buybacks are authorisations.** A board authorising, increasing or extending a
+  repurchase program is an event. Reports of shares already repurchased, or of the amount
+  left under a program, are not events and get no row.
 - **is_new_announcement:** `True` if this filing announces the decision for the first
   time (the board declares or approves it now). An 8-K/A that repeats an event from its
   original 8-K is `False`; it is `True` only if the amendment adds a new decision. `False` if the text says "previously
   announced", or only reports what already happened ("declared and paid during the
-  quarter", "repurchased 1.2 million shares"). If an earnings release says a dividend was
+  quarter"). If an earnings release says a dividend was
   "recently declared", look for an earlier 8-K from the company in `filing_index`.
   Past-only events still get a row, so the extractor is scored on telling them apart.
 - **dividend_per_share:** US dollars per share. "24.25 cents" is `0.2425`, "$.10" is `0.10`.

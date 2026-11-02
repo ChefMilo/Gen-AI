@@ -166,3 +166,27 @@ def test_to_events_numbers_events_and_dates_them():
     assert events[0].first_tradeable_date == date(2024, 5, 3)  # accepted after 16:00
     assert events[0].extraction_status == "passed"
     assert events[2].extraction_status == "flagged" and events[2].flags == ["check: made up"]
+
+
+def test_judgement_fields_reuse_the_value_quote():
+    event = DIV_EVENT | {"evidence": {"dps": 0, "record": 0, "payable": 0}}  # no new / kind
+    [checked] = extract.check_reply(reply([event]), TEXT)
+    assert checked.problems == []
+    assert checked.evidence["is_new_announcement"] == DIV
+    assert checked.evidence["dividend_kind"] == DIV
+
+
+def test_reply_with_prose_after_the_json_is_read():
+    text = (
+        reply([DIV_EVENT])
+        + "\n\nI left out the buyback because only past repurchases were reported."
+    )
+    [checked] = extract.check_reply(text, TEXT)
+    assert checked.problems == []
+
+
+def test_filing_text_reads_utf8(tmp_path):
+    folder = tmp_path / extract.TEXT_DIR / "ACME" / "acc"
+    folder.mkdir(parents=True)
+    (folder / "ex99.txt").write_text("Acme\u2019s Board declared a dividend.", encoding="utf-8")
+    assert extract.filing_text(tmp_path, "ACME", "acc") == "Acme\u2019s Board declared a dividend."

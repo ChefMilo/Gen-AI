@@ -102,7 +102,8 @@ def _filing_text(data_dir: Path, ticker: str, accession_no: str) -> str | None:
     folder = data_dir / TEXT_DIR / ticker / accession_no
     if not folder.is_dir():
         return None
-    return " ".join(p.read_text(errors="ignore") for p in sorted(folder.glob("*.txt")))
+    files = sorted(folder.glob("*.txt"))
+    return " ".join(p.read_text(encoding="utf-8", errors="replace") for p in files)
 
 
 def _event_problems(e: GoldEvent, where: str) -> list[str]:
