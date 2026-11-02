@@ -17,7 +17,7 @@ from pydantic import BaseModel, ValidationError
 from store.prices import first_tradeable_date
 from store.schema import DividendKind, Event, EventType
 
-EXTRACTOR_VERSION = "extract-1.1"
+EXTRACTOR_VERSION = "extract-1.2"
 TEXT_DIR = Path("text/edgar")  # under $GENAI_DATA_DIR
 
 KEYWORDS = re.compile(r"dividend|repurchas|buy ?-?back|share purchase program", re.I)
@@ -116,6 +116,7 @@ class Extracted(BaseModel):
     fields: dict
     evidence: dict[str, str]
     problems: list[str]
+    notes: list[str] = []  # corrections made in code; they don't flag the event
 
 
 def squash(text: str) -> str:
@@ -237,8 +238,19 @@ def check_reply(reply: str, excerpts: str, filed: date | None = None) -> list[Ex
                 continue
             evidence[FIELD_OF[key]] = quote
         fields = {FIELD_OF[k]: getattr(e, k) for k in own + ("new", "announced")}
+        notes = []
+        if e.type == "dividend" and e.new and filed and e.record and e.record < filed:
+            # A board sets record dates in the future: this dividend was declared earlier.
+            fields["is_new_announcement"] = False
+            notes.append("auto: record date before the filing, so not a new announcement")
         out.append(
-            Extracted(event_type=e.type, fields=fields, evidence=evidence, problems=problems)
+            Extracted(
+                event_type=e.type,
+                fields=fields,
+                evidence=evidence,
+                problems=problems,
+                notes=notes,
+            )
         )
     return out
 
@@ -291,6 +303,8 @@ def to_events(
     for e in extracted:
         counters[e.event_type] += 1
         flags = [f"check: {p}" for p in e.problems]
+        status = "flagged" if flags else "passed"
+        flags += e.notes
         events.append(
             Event(
                 event_id=f"{filing['accession_no']}-{e.event_type}-{counters[e.event_type]}",
@@ -305,7 +319,7 @@ def to_events(
                 acceptance_datetime=acceptance,
                 first_tradeable_date=ftd,
                 evidence=e.evidence,
-                extraction_status="flagged" if flags else "passed",
+                extraction_status=status,
                 flags=flags,
                 extracted_at=extracted_at,
                 extractor_version=extractor_version,

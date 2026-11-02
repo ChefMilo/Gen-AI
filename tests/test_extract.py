@@ -190,3 +190,12 @@ def test_filing_text_reads_utf8(tmp_path):
     folder.mkdir(parents=True)
     (folder / "ex99.txt").write_text("Acme\u2019s Board declared a dividend.", encoding="utf-8")
     assert extract.filing_text(tmp_path, "ACME", "acc") == "Acme\u2019s Board declared a dividend."
+
+
+def test_record_date_before_filing_means_not_new():
+    event = DIV_EVENT | {"record": "2024-04-20", "payable": "2024-05-10"}
+    [checked] = extract.check_reply(reply([event]), TEXT, date(2024, 5, 2))
+    assert checked.problems == []  # corrected in code, no retry
+    assert checked.fields["is_new_announcement"] is False
+    [e] = extract.to_events([checked], FILING, CALENDAR, datetime(2024, 5, 3), "test")
+    assert e.extraction_status == "passed" and e.flags[0].startswith("auto:")
