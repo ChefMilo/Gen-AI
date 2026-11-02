@@ -65,6 +65,7 @@ class Event(BaseModel):
     # Derived as of the day before first_tradeable_date
     mcap_usd: float | None = None
     mcap_bucket: McapBucket | None = None
+    sector: str | None = None  # from universe.csv
 
     text_features: dict[str, TextFeature] = Field(default_factory=dict)
     evidence: dict[str, str] = Field(default_factory=dict)  # field name -> exact quote
