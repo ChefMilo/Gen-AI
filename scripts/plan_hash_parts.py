@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from evaluation.plan import (  # noqa: E402
     REPO_ROOT,
+    frame_hash,
     load_experiment_config,
     plan_canonical_json,
     plan_experiment,
@@ -52,6 +53,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {key:16s} {_short(doc[key])}")
     for key in sorted(doc["fingerprint"]):
         print(f"  fingerprint.{key:16s} {doc['fingerprint'][key]}")
+    for name, frame in (("prices", data.prices), ("events", data.events)):
+        for column in frame.columns:
+            print(f"  {name}.{column:22s} {frame_hash(frame[[column]])}")
     return 0
 
 
