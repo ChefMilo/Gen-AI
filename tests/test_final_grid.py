@@ -25,6 +25,7 @@ from evaluation.plan import (
     ExperimentConfig,
     _target_key,
     load_experiment_config,
+    plan_canonical_json,
     plan_experiment,
     plan_sha256,
 )
@@ -33,6 +34,7 @@ from experiment_helpers import small_data
 from universes.planted import select_targets
 
 FINAL = REPO_ROOT / "configs" / "final.yaml"
+PLAN_DUMP = REPO_ROOT / "results" / "ci" / "final-plan.json"  # git-ignored
 
 
 @pytest.fixture(scope="module")
@@ -362,4 +364,9 @@ def test_frozen_final_plan_hash_reproduces(final_cfg):
     cfg = final_cfg.resolved()
     data = load_base_data(cfg)
     plan = plan_experiment(data.prices, data.events, cfg, data.benchmarks)
-    assert plan_sha256(plan) == frozen_plan_sha256(cfg)
+    actual, frozen = plan_sha256(plan), frozen_plan_sha256(cfg)
+    if actual != frozen:
+        # For diffing against another machine's build (CI uploads this file).
+        PLAN_DUMP.parent.mkdir(parents=True, exist_ok=True)
+        PLAN_DUMP.write_text(plan_canonical_json(plan), encoding="utf-8")
+    assert actual == frozen, f"canonical plan JSON written to {PLAN_DUMP}"

@@ -714,10 +714,14 @@ def plan_experiment(
     )
 
 
+def plan_canonical_json(plan: ExperimentPlan) -> str:
+    """The text plan_sha256 hashes: the plan as JSON, sorted keys, no whitespace."""
+    return json.dumps(plan.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+
+
 def plan_sha256(plan: ExperimentPlan) -> str:
-    """SHA-256 of the canonical plan JSON (sorted keys, no whitespace)."""
-    text = json.dumps(plan.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    """SHA-256 of plan_canonical_json."""
+    return hashlib.sha256(plan_canonical_json(plan).encode("utf-8")).hexdigest()
 
 
 def frozen_plan_sha256(cfg: ExperimentConfig) -> str | None:
