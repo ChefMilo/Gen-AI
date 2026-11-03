@@ -12,10 +12,15 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
-      - run: python --version && pip freeze
+      - run: python --version && pip freeze && nproc && python -c "import numpy; numpy.show_config()"
+      - name: Plan hash, three fresh processes (diagnostic)
+        run: |
+          for h in 0 1 random; do
+            PYTHONHASHSEED=$h python scripts/plan_hash_parts.py --out results/ci/plan-hash-$h.json
+          done
       - run: ruff check .
       - run: pytest -q
-      - if: failure()
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: final-plan-json
