@@ -12,17 +12,16 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
-      - run: python --version && pip freeze && nproc && python -c "import numpy; numpy.show_config()"
-      - name: Plan hash, three fresh processes (diagnostic)
+      - name: Environment
         run: |
-          for h in 0 random; do
-            PYTHONHASHSEED=$h python scripts/plan_hash_parts.py --out results/ci/plan-hash-$h.json
-          done
-          echo "--- AVX-512 dispatch disabled"
-          NPY_DISABLE_CPU_FEATURES="X86_V4 AVX512_ICL AVX512_SPR" python scripts/plan_hash_parts.py --out results/ci/plan-no-avx512.json || true
+          python --version
+          pip freeze
+          python -c "import numpy; numpy.show_config()" | sed -n '/SIMD Extensions/,$p'
+      - name: Plan hash by part (compare across machines)
+        run: python scripts/plan_hash_parts.py --out results/ci/plan-hash-parts.json
       - run: ruff check .
       - run: pytest -q
-      - if: always()
+      - if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: final-plan-json
