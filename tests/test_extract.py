@@ -199,3 +199,27 @@ def test_record_date_before_filing_means_not_new():
     assert checked.fields["is_new_announcement"] is False
     [e] = extract.to_events([checked], FILING, CALENDAR, datetime(2024, 5, 3), "test")
     assert e.extraction_status == "passed" and e.flags[0].startswith("auto:")
+
+
+def test_extract_keeps_first_reply_when_the_retry_call_fails():
+    bad = DIV_EVENT | {"dps": 80.0}
+
+    def ask(system, messages):
+        if len(messages) > 1:
+            raise RuntimeError("credit balance is too low")
+        return reply([bad])
+
+    [event] = extract.extract(ask, "msg", TEXT)
+    assert any("retry not made (RuntimeError)" in p for p in event.problems)
+
+
+def test_reply_that_corrects_itself_uses_the_last_json():
+    first = reply([DIV_EVENT | {"dps": 0.99}])
+    text = first + "\n\nWait, the amount is wrong. Let me correct that.\n\n" + reply([DIV_EVENT])
+    [checked] = extract.check_reply(text, TEXT)
+    assert checked.fields["dividend_per_share"] == 0.25
+
+
+def test_reply_cut_off_mid_json_is_unreadable():
+    with pytest.raises(ValueError):
+        extract.check_reply(reply([DIV_EVENT])[:-20], TEXT)

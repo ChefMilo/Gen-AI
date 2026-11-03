@@ -177,13 +177,33 @@ def user_message(company: str, form_type: str, filed: str, excerpts: str) -> str
 
 
 def _parse(reply: str) -> Reply:
-    start, end = reply.find("{"), reply.rfind("}")
-    if start < 0 or end < start:
-        raise ValueError("the reply has no JSON object")
-    try:
-        return Reply.model_validate(json.loads(reply[start : end + 1]))
-    except (json.JSONDecodeError, ValidationError) as error:
-        raise ValueError(f"the reply is not valid JSON in the required shape: {error}") from error
+    """The last JSON object in the reply that has the required shape.
+
+    The model sometimes corrects itself ("Wait, ... let me correct that") and writes the
+    JSON again; the last valid object is its final answer.
+    """
+    decoder = json.JSONDecoder()
+    found, last_error = None, None
+    i = reply.find("{")
+    while i >= 0:
+        try:
+            obj, end = decoder.raw_decode(reply, i)
+        except json.JSONDecodeError as error:
+            last_error = error
+            i = reply.find("{", i + 1)
+            continue
+        try:
+            found = Reply.model_validate(obj)
+        except ValidationError as error:  # a nested object, or the wrong shape
+            last_error = error
+            i = reply.find("{", i + 1)
+            continue
+        i = reply.find("{", end)
+    if found is None:
+        if last_error is None:
+            raise ValueError("the reply has no JSON object")
+        raise ValueError(f"the reply is not valid JSON in the required shape: {last_error}")
+    return found
 
 
 def check_reply(reply: str, excerpts: str, filed: date | None = None) -> list[Extracted]:
@@ -279,7 +299,14 @@ def extract(ask: Ask, message: str, excerpts: str, filed: date | None = None) ->
             + "\nReply again with the complete corrected JSON.",
         },
     ]
-    second = ask(SYSTEM, retry)
+    try:
+        second = ask(SYSTEM, retry)
+    except Exception as error:  # the API refused or failed: keep the first reply, flagged
+        if events is None:
+            raise
+        for e in events:
+            e.problems.append(f"retry not made ({type(error).__name__})")
+        return events
     try:
         return check_reply(second, excerpts, filed)
     except ValueError:
