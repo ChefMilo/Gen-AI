@@ -1,0 +1,18 @@
+# Synthetic demonstration dates ONLY: this does not decide the real holdout split.
+experiment_kind: offline_scripted_stress_test
+research_start: 2020-01-02
+research_end: 2020-03-31
+n_planted: 10
+n_placebo: 10
+n_tickers: 80
+base_seed: 0
+backtest_budget: 3
+n_boot: 500
+portfolio:
+  initial_capital: 1000000
+  fee_bps: 5
+  slippage_bps: 5
+  annual_borrow_bps: 0
+  lot_size: 1
+  annual_risk_free: 0
+  periods_per_year: 252
