@@ -28,6 +28,17 @@ class EvidenceQuote(BaseModel):
 # TODO(member-3): owner confirms. Placeholder agreed with Member 5 (Evaluation),
 # which matches findings to planted signals on event_ids.
 class Finding(BaseModel):
+    """One reported signal.
+
+    effect_car is the raw mean event CAR over event_ids, signed as computed: negative
+    when prices fell after the events. It is not the return of a long/short position
+    (the harness's directional_mean_car is not used here). direction is a separate
+    field: the position taken. The stub systems and R0 set it from the sign of
+    effect_car; the agent harness copies it from the signal spec, so it can disagree
+    with that sign. Evaluation (evaluation.matching) tests sign(effect_car) against the
+    planted direction and ignores direction.
+    """
+
     finding_id: str
     session_id: str
     system: System

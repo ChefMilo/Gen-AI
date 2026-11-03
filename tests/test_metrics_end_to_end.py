@@ -6,6 +6,7 @@ from agent.finding import EvidenceQuote, Finding
 from dsl.signal import SignalSpec
 from evaluation.metrics import evaluate, metrics_table
 from evaluation.reference_car import event_cars
+from evaluation.systems import OracleSystem, make_view
 from evaluation.universe_record import measurable_target_ids, plant_universe
 from universe_helpers import zero_noise
 from universes.fake_events import make_fake_events
@@ -117,3 +118,26 @@ def test_perfect_findings_on_noisy_prices_have_zero_effect_error(data):
         assert abs(m.effect_car - m.injected_effect) > 1e-6  # the baseline it now removes
     truths = metrics_table([result]).truths
     assert truths["snr"].notna().all() and (truths["snr"] > 0).all()
+
+
+def test_negative_effect_spec_gives_negative_effect_car(data):
+    """effect_car is the raw mean CAR, signed as computed; direction is a separate field.
+
+    The oracle builds its findings the way the stub systems and R0 do, so a spec planted
+    with direction -1 must come back with effect_car < 0 and direction "short".
+    """
+    prices, benchmarks, events = data
+    spec = SPECS[1]
+    assert spec.direction == -1
+    planted_prices, record = plant_universe("planted-neg", prices, events, [spec], MIN_EVENTS)
+    view = make_view("planted-neg", planted_prices, benchmarks, events)
+    run = OracleSystem(holding_days=H).run_with_truths(view, 10, 0, list(record.truths))
+    [finding] = run.findings
+    assert finding.effect_car < 0
+    assert finding.direction == "short"
+    assert evaluate("R0", record, [finding]).match.matches  # the sign test passes
+
+    # Matching reads the sign of effect_car only: a "long" label does not flip it.
+    relabelled = finding.model_copy(update={"direction": "long"})
+    assert relabelled.effect_car < 0
+    assert evaluate("R0", record, [relabelled]).match.matches

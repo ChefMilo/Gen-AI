@@ -87,6 +87,20 @@ class DataConfig(BaseModel):
     events_seed: int = 0  # make_fake_events
 
 
+class SystemsConfig(BaseModel):
+    """The systems: block of an experiment config, in its mapping form.
+
+    names: systems to run (overridden by --systems on the CLI);
+    modules: imported before the names are looked up; each registers its systems with
+    evaluation.systems.register_system.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    names: list[str] = []
+    modules: list[str] = []
+
+
 class ExperimentConfig(BaseModel):
     """configs/experiment.yaml. Fields left None are filled by resolved()."""
 
@@ -99,7 +113,8 @@ class ExperimentConfig(BaseModel):
     base_seed: int = 0
     holding_days: int = Field(DEFAULT_HOLDING_DAYS, ge=1)
     include_real: bool = True
-    systems: list[str] = []
+    # A list of names, or a SystemsConfig mapping with names and modules.
+    systems: list[str] | SystemsConfig = []
     n_boot: int = Field(2000, ge=1)
     # None: from configs/default.yaml (plant_min_events, backtest_budget, jaccard_min,
     # research_start, research_end) or universes.placebo (min_gap_days).
@@ -113,6 +128,15 @@ class ExperimentConfig(BaseModel):
     # the truth, so a finding on the spec's own definition scores Jaccard = kept share.
     max_dropped_share: float = Field(0.1, ge=0, le=1)
     data: DataConfig = DataConfig()
+
+    @property
+    def system_names(self) -> list[str]:
+        s = self.systems
+        return list(s.names if isinstance(s, SystemsConfig) else s)
+
+    @property
+    def system_modules(self) -> list[str]:
+        return list(self.systems.modules) if isinstance(self.systems, SystemsConfig) else []
 
     def resolved(self, defaults_path: Path = DEFAULT_CONFIG_PATH) -> "ExperimentConfig":
         """A copy with every None default filled in (research_end may stay None)."""

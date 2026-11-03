@@ -3,6 +3,13 @@
     python -m evaluation.run --config configs/experiment.yaml --systems null,random
     python -m evaluation.run --config configs/experiment.yaml --dry-run  # plan + build only
 
+Systems come from the config's systems: block (or --systems). Its mapping form can list
+modules to import first, each registering its own systems (evaluation.systems):
+
+    systems:
+      names: [null, r0, r2]
+      modules: [agent.systems]
+
 Output under results/<experiment_id>/ (or --out-dir), which must be git-ignored:
 - plan.json (evaluation.plan) and universes/<universe_id>/ (evaluation.universe_store);
 - runs/<system>/<universe_id>/: findings.jsonl (one Finding per line) and
@@ -46,7 +53,14 @@ from evaluation.plan import (
     save_plan,
 )
 from evaluation.stats import compare_systems, detection_curve_data, system_summary
-from evaluation.systems import ResearchSystem, SystemRun, make_systems, make_view
+from evaluation.systems import (
+    ResearchSystem,
+    SystemConfigError,
+    SystemRun,
+    make_systems,
+    make_view,
+    resolve_system_names,
+)
 from evaluation.universe_record import UniverseRecord
 from evaluation.universe_store import (
     FORMAT_VERSION,
@@ -359,8 +373,13 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     cfg = load_experiment_config(args.config).resolved()
-    names = args.systems.split(",") if args.systems else list(cfg.systems)
-    systems = make_systems([n.strip() for n in names if n.strip()], cfg.holding_days)
+    names = args.systems.split(",") if args.systems else cfg.system_names
+    names = [n.strip() for n in names if n.strip()]
+    try:
+        resolve_system_names(names, cfg.system_modules)
+    except SystemConfigError as err:
+        parser.error(str(err))
+    systems = make_systems(names, cfg.holding_days)
     out_dir = args.out_dir or default_out_dir(cfg)
     outcome = run_experiment(cfg, systems, out_dir, resume=not args.no_resume,
                              dry_run=args.dry_run)

@@ -10,9 +10,11 @@ Definitions, per (system, universe):
   n_unmatched = significant findings that did not match (wrong sign, duplicates,
   no truth nearby), reported alongside;
 - false_discoveries: significant findings (placebo only; every one is false);
-- effect_error: reported effect_car - true_effect, over matches. true_effect is the
-  mean injected_car over the finding's matched measurable targets (direction *
-  effect if the truth has none) plus, when the truth has a baseline, their mean
+- effect_error: reported effect_car - true_effect, over matches. effect_car is the raw
+  mean event CAR, signed as computed, so a negative planted effect gives a negative
+  effect_car whatever Finding.direction says (direction is a separate field).
+  true_effect is the mean injected_car over the finding's matched measurable targets
+  (direction * effect if the truth has none) plus, when the truth has a baseline, their mean
   baseline_car (the CAR they had before planting); nominal_effect_error:
   effect_car - direction * effect, alongside.
   effect_error_sum and effect_error_abs_sum (0 with no matches) let statistics pool

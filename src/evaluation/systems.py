@@ -17,9 +17,25 @@ implement it; until then:
 
 Finding.system only allows R0-R3 / R3-U (agent/finding.py), so stub findings carry
 STUB_FINDING_SYSTEM; the runner keys results by ResearchSystem.name, not by that field.
+
+Registry: SYSTEMS maps the names the CLI accepts to factories. Code outside
+src/evaluation adds its systems with register_system(name, factory) at import time, in a
+module listed in the experiment config:
+
+    systems:
+      names: [null, r0, r2]
+      modules: [agent.systems]  # imported before the names are looked up
+
+resolve_system_names imports those modules and checks the names. agent.experiment,
+which updates SYSTEMS directly, is still tried for names nothing else registered, with a
+deprecation warning.
 """
 
+import importlib
+import inspect
+import logging
 import math
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Protocol, runtime_checkable
@@ -36,6 +52,8 @@ from evaluation.reference_car import event_cars
 from evaluation.universe_record import measurable_target_ids
 from universes.placebo import PLACEBO_COLUMNS
 from universes.planted import PlantTruth, eligible
+
+log = logging.getLogger(__name__)
 
 STUB_FINDING_SYSTEM = "R0"
 VIEW_EVENT_ORDER = ["first_tradeable_date", "ticker", "event_id"]
@@ -275,12 +293,112 @@ class OracleSystem:
         )
 
 
-# Systems the CLI can name. OracleSystem is deliberately absent.
-SYSTEMS: dict[str, type] = {
+# Systems the CLI can name: name -> factory (usually the class). OracleSystem is
+# deliberately absent. Other packages add theirs with register_system, from a module
+# listed under systems.modules in the experiment config (load_system_modules).
+SYSTEMS: dict[str, Callable[..., ResearchSystem]] = {
     "null": NullSystem,
     "random": RandomSystem,
     "r0": R0System,
 }
+# name -> the module that registered it, where known.
+SYSTEM_SOURCES: dict[str, str] = {name: __name__ for name in SYSTEMS}
+
+# Deprecated: the agent's own entry point registers its systems by updating SYSTEMS.
+# Tried only for names no configured module registered.
+LEGACY_SYSTEM_MODULE = "agent.experiment"
+LEGACY_REGISTER = "register_agent_systems"
+
+# Options make_systems passes to a factory that accepts them.
+FACTORY_OPTIONS = ("holding_days", "min_events")
+
+
+class SystemConfigError(ValueError):
+    """A system module failed to import, or a requested system is not registered."""
+
+
+def register_system(
+    name: str, factory: Callable[..., ResearchSystem], source: str | None = None
+) -> None:
+    """Make name available to make_systems. Registering the same factory again is a
+    no-op (modules may be imported more than once); a different one raises."""
+    current = SYSTEMS.get(name)
+    if current is not None and current is not factory:
+        raise ValueError(
+            f"system {name!r} is already registered by {SYSTEM_SOURCES.get(name, '?')}"
+        )
+    SYSTEMS[name] = factory
+    SYSTEM_SOURCES[name] = source or getattr(factory, "__module__", None) or "?"
+
+
+def load_system_modules(modules: Iterable[str]) -> None:
+    """Import each module, which registers its systems as a side effect."""
+    for module in modules:
+        try:
+            importlib.import_module(module)
+        except Exception as err:
+            raise SystemConfigError(
+                f"could not import system module {module!r} (systems.modules): "
+                f"{type(err).__name__}: {err}"
+            ) from err
+
+
+def _legacy_fallback(names: Iterable[str]) -> None:
+    """Let agent.experiment register its systems the old way, if it exists."""
+    missing = [n for n in names if n not in SYSTEMS]
+    if not missing:
+        return
+    try:
+        legacy = importlib.import_module(LEGACY_SYSTEM_MODULE)
+    except ModuleNotFoundError as err:
+        if err.name == LEGACY_SYSTEM_MODULE or LEGACY_SYSTEM_MODULE.startswith(f"{err.name}."):
+            return  # no agent.experiment here
+        raise SystemConfigError(
+            f"could not import fallback module {LEGACY_SYSTEM_MODULE!r}: {err}"
+        ) from err
+    register = getattr(legacy, LEGACY_REGISTER, None)
+    if register is None:
+        return
+    before = set(SYSTEMS)
+    register()
+    for name in set(SYSTEMS) - before:
+        SYSTEM_SOURCES[name] = LEGACY_SYSTEM_MODULE
+
+
+def resolve_system_names(names: list[str], modules: Iterable[str] = ()) -> None:
+    """Import the configured system modules, then check every name is registered.
+
+    Names still missing are looked up in agent.experiment (deprecated), with a warning
+    for each system it supplies. Raises SystemConfigError naming the failing module, or
+    the unknown names and the registered ones.
+    """
+    load_system_modules(modules)
+    _legacy_fallback(names)
+    unknown = [name for name in names if name not in SYSTEMS]
+    if unknown:
+        raise SystemConfigError(
+            f"unknown systems {unknown}; registered: {sorted(SYSTEMS)}. "
+            "List the module that registers them under systems.modules in the config."
+        )
+    for name in names:
+        if SYSTEM_SOURCES.get(name) == LEGACY_SYSTEM_MODULE:
+            log.warning(
+                "DEPRECATED: system %r comes from %s; register it with "
+                "evaluation.systems.register_system in a module listed under "
+                "systems.modules in the experiment config instead",
+                name, LEGACY_SYSTEM_MODULE,
+            )
+
+
+def _factory_kwargs(factory: Callable, options: dict[str, Any]) -> dict[str, Any]:
+    try:
+        params = inspect.signature(factory).parameters.values()
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
+        return dict(options)
+    accepted = {p.name for p in params}
+    return {k: v for k, v in options.items() if k in accepted}
 
 
 def make_systems(
@@ -288,23 +406,9 @@ def make_systems(
     holding_days: int = 5,
     min_events: int = 20,
 ) -> list[ResearchSystem]:
+    """One system per name; each factory gets the FACTORY_OPTIONS it accepts."""
     unknown = [name for name in names if name not in SYSTEMS]
     if unknown:
-        raise ValueError(f"unknown systems {unknown}; known: {sorted(SYSTEMS)}")
-
-    out = []
-
-    for name in names:
-        cls = SYSTEMS[name]
-
-        if cls in (RandomSystem, R0System):
-            system = cls(
-                holding_days=holding_days,
-                min_events=min_events,
-            )
-        else:
-            system = cls()
-
-        out.append(system)
-
-    return out
+        raise SystemConfigError(f"unknown systems {unknown}; registered: {sorted(SYSTEMS)}")
+    options = {"holding_days": holding_days, "min_events": min_events}
+    return [SYSTEMS[name](**_factory_kwargs(SYSTEMS[name], options)) for name in names]

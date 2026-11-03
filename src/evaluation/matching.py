@@ -8,9 +8,10 @@ A finding matches a truth if all hold:
 - sign(effect_car) == the truth's direction;
 - passed_correction.
 
-TO CONFIRM with Member 3/4: effect_car is read as the mean event CAR, signed by the
-event effect (negative when prices fall after the events), not the return of the
-long/short position. Finding.direction is not used for matching.
+effect_car is the raw mean event CAR, signed as computed (negative when prices fall
+after the events), not the return of the long/short position; every producer (the stub
+systems, R0, harness.backtester) reports it that way. Finding.direction is a separate
+field and is not used for matching. See agent.finding.Finding.
 
 Each truth matches at most one finding and each finding at most one truth: among the
 pairs that pass every test, the highest Jaccard is taken first, ties going to the
