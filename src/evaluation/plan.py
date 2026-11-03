@@ -605,7 +605,7 @@ def plan_experiment(
 
     if cfg.dev_guard is not None:  # a hard check on every plan, not just in tests
         seeds = {cfg.base_seed} | {u.seed for u in universes if u.seed is not None}
-        check_dev_overlap(seeds, kept, cfg.dev_guard, events)
+        check_dev_overlap(seeds, kept, cfg.dev_guard, events, cfg.jaccard_min)
 
     appearances = {s.spec_id: 0 for s in kept}
     for specs in assigned:

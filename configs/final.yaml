@@ -4,9 +4,11 @@
 # (backtest_budget, alpha, jaccard_min, plant_min_events, research_start/end).
 
 experiment_id: final-v1
-# 16 specs (4 bases x 4 strengths). Variants of a base never share a universe and
-# same-event-type bases overlap, so a universe holds a dividend and a buyback spec:
-# 16 universes x 2 = 2 independent appearances per spec. See evaluation.plan.
+# 16 specs (4 bases x 4 strengths). Variants of a base never share a universe, and
+# dividend_framing_growth overlaps both other dividend bases, so it only shares a
+# universe with the buyback base. With 16 universes the planner gives the growth specs
+# 1 appearance each and the other 12 specs 2 (n_planted: 24 gives 2 and 3). See
+# evaluation.plan.
 n_planted: 16
 n_placebo: 10
 specs_per_universe: 4
@@ -38,19 +40,23 @@ data:
 grid:
   strengths: [0.005, 0.01, 0.02, 0.04]
   directions: [1, -1, 1, -1]
-  # Bases (eligible targets on the research-period fake events; all found by the oracle at
-  # 4% on 3/3 independent draws). Each feature type and each complexity has one dividend
-  # and one buyback base, so event type is not confounded with either, and a universe can
-  # hold a dividend and a buyback spec together (same-event-type bases overlap).
+  # Bases (eligible targets on the research-period fake events). None shares more than
+  # dev_guard.max_containment of its targets with an agent dev spec (PR #18).
+  # Event type is NOT balanced: both structured bases are dividends. No one-feature
+  # structured buyback base clears the guard (each shares 33-59% of its targets with PR
+  # #18's dev specs: the fake rationale labels do not depend on structure, so ~1/3 of any
+  # structured buyback set is "excess cash"); only a rationale filter avoids them.
+  # So structured = dividend x 2, text = dividend (single) + buyback (conjunction).
   # Excluded: fake_routine (the event type alone matches it, Jaccard 0.73), new buyback
   # programs (0.60 alone, 0.58 as small caps: too close to jaccard_min), special
-  # dividends and fake_cautious (under plant_min_events).
+  # dividends and fake_cautious (under plant_min_events), existing buyback programs and
+  # excess-cash buybacks (overlap PR #18's dev specs).
   bases:
     single:
-      structured:  # 258 targets, 37% small caps
-        name: buyback_existing_program
-        event_type: buyback
-        conditions: [{field: is_new_program, op: "==", value: false}]
+      structured:  # 1041 targets, all large caps
+        name: dividend_large
+        event_type: dividend
+        conditions: [{field: mcap_bucket, op: "==", value: large}]
       text:  # 788 targets, 34% small caps; labels by name, must be in the data's label set
         name: dividend_framing_growth
         event_type: dividend
@@ -62,10 +68,10 @@ grid:
         conditions:
           - {field: dividend_change_pct, op: ">", value: 10.0}
           - {field: mcap_bucket, op: "==", value: small}
-      text:  # 80 targets, all small caps
-        name: buyback_rationale_excess_cash_small
+      text:  # 77 targets, all small caps
+        name: buyback_rationale_undervalued_small
         event_type: buyback
-        text_filter: {feature: buyback_rationale, equals: fake_excess_cash}
+        text_filter: {feature: buyback_rationale, equals: fake_undervalued}
         conditions: [{field: mcap_bucket, op: "==", value: small}]
 
 dev_guard:
@@ -73,5 +79,6 @@ dev_guard:
   dev_configs:
     - configs/experiment.yaml  # fake-v1: seeds 0-1009, default_spec_grid
     - configs/experiment_agent_dev.yaml  # PR #18 (agent dev plan); skipped if absent
+  max_containment: 0.05  # of a final base's targets shared with one agent dev spec
 
 plan_sha256_file: configs/final.plan.sha256

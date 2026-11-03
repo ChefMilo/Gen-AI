@@ -20,9 +20,24 @@ plants it; the PlantSpec's pandas condition is rendered from the same conditions
 the two select the same events.
 
 Overlap guard (check_dev_overlap, called by evaluation.plan.plan_experiment when the
-config has a dev_guard: block): every universe seed of the final plan must be at least
-dev_guard.min_seed and outside the seeds the dev configs use, and no final spec may
-have the canonical signature (spec_signature, not the name) of a dev spec.
+config has a dev_guard: block), against every dev config:
+- every universe seed of the final plan must be at least dev_guard.min_seed and outside
+  the seeds the dev configs use;
+- no final spec may have the canonical signature (spec_signature, not the name) of a
+  dev spec.
+And against the specs of agent dev configs (agent.experiment's {experiment, dev} format,
+the specs the agent systems were developed on), measured on the final plan's events:
+- containment: no final base may share more than dev_guard.max_containment of its
+  targets with any one dev spec (shared / final targets). This catches a final base
+  nested in a broader dev spec, which Jaccard misses (a base of 80 targets inside a dev
+  spec of 220 has Jaccard 0.36);
+- Jaccard: nor reach jaccard_min with one, the overlap at which a finding of the dev spec
+  would match the final plant. Jaccard <= containment, so this only binds when
+  max_containment >= jaccard_min.
+The runner-test grids (evaluation.plan.ExperimentConfig files such as fake-v1, run with
+the LLM-free systems only) get the seed and signature checks, not the overlap ones:
+the final bases are cut from the same fake events, so they nest in those grids by
+construction.
 """
 
 import logging
@@ -125,6 +140,8 @@ class DevGuardConfig(BaseModel):
     # Relative to the repo root, written with /; missing files are skipped. Strings, not
     # Paths, so plan.json (and its hash) is the same on every OS.
     dev_configs: list[str] = []
+    # Most of a final base's targets one agent dev spec may share (module docstring).
+    max_containment: float = Field(0.05, ge=0, le=1)
 
 
 # --- Rendering and signatures ----------------------------------------------------------
@@ -272,6 +289,8 @@ def grid_specs(grid: GridConfig, events: pd.DataFrame, min_events: int, holding_
 class DevUsage(BaseModel):
     seeds: set[int] = set()
     specs: dict[tuple, str] = {}  # signature -> "<config>:<spec_id>"
+    # Agent dev specs, checked for overlap: ("<config>:<spec_id>", spec)
+    agent_specs: list[tuple[str, PlantSpec]] = []
 
 
 def _seeds_of(base_seed: int, n_planted: int, n_placebo: int) -> set[int]:
@@ -309,6 +328,7 @@ def dev_usage(paths: list[str], events: pd.DataFrame) -> DevUsage:
                     usage.seeds.add(int(universe["seed"]))
                     specs += [PlantSpec.model_validate({"holding_days": exp.holding_days, **s})
                               for s in universe.get("specs", [])]
+            usage.agent_specs += [(f"{path}:{s.spec_id}", s) for s in specs]
         else:
             exp = ExperimentConfig.model_validate(data)
             usage.seeds |= _seeds_of(exp.base_seed, exp.n_planted, exp.n_placebo)
@@ -321,8 +341,44 @@ def dev_usage(paths: list[str], events: pd.DataFrame) -> DevUsage:
     return usage
 
 
+OVERLAP_COLUMNS = ["final_spec", "n_variants", "dev_spec", "n_final", "n_dev", "n_shared",
+                   "containment", "jaccard"]
+
+
+def _target_ids(events: pd.DataFrame, spec: PlantSpec) -> set:
+    return set(select_targets(events, spec)["event_id"])
+
+
+def dev_overlap(specs: list[PlantSpec], dev_specs: list[tuple[str, PlantSpec]],
+                events: pd.DataFrame) -> pd.DataFrame:
+    """One row per (final base, agent dev spec): targets on these events, shared targets,
+    containment (shared / final targets) and Jaccard. A base's variants (strengths,
+    directions) select the same targets, so each base is one row, named by its first
+    spec."""
+    bases: dict[tuple, list[PlantSpec]] = {}
+    for spec in specs:
+        text = (spec.text_feature.feature, spec.text_feature.equals) if spec.text_feature else None
+        bases.setdefault((spec.event_type, _normal_conjuncts(spec.condition), text),
+                         []).append(spec)
+    dev_ids = [(name, _target_ids(events, s)) for name, s in dev_specs]
+    rows = []
+    for variants in bases.values():
+        ids = _target_ids(events, variants[0])
+        for name, other in dev_ids:
+            shared = len(ids & other)
+            union = len(ids | other)
+            rows.append({
+                "final_spec": variants[0].spec_id, "n_variants": len(variants),
+                "dev_spec": name, "n_final": len(ids), "n_dev": len(other),
+                "n_shared": shared,
+                "containment": shared / len(ids) if ids else 0.0,
+                "jaccard": shared / union if union else 0.0,
+            })
+    return pd.DataFrame(rows, columns=OVERLAP_COLUMNS)
+
+
 def check_dev_overlap(seeds: set[int], specs: list[PlantSpec], guard: DevGuardConfig,
-                      events: pd.DataFrame) -> None:
+                      events: pd.DataFrame, jaccard_min: float | None = None) -> None:
     """Raise if a final seed or spec is a dev one (see the module docstring)."""
     low = sorted(s for s in seeds if s < guard.min_seed)
     if low:
@@ -340,3 +396,16 @@ def check_dev_overlap(seeds: set[int], specs: list[PlantSpec], guard: DevGuardCo
     if clashes:
         raise ValueError("final specs identical to dev specs (same signature): "
                          + "; ".join(clashes))
+    overlap = dev_overlap(specs, usage.agent_specs, events)
+    bad = overlap["containment"] > guard.max_containment
+    if jaccard_min is not None:
+        bad |= overlap["jaccard"] >= jaccard_min
+    if bad.any():
+        raise ValueError(
+            "final bases that overlap agent dev specs (containment > dev_guard."
+            f"max_containment={guard.max_containment}"
+            + ("" if jaccard_min is None else f" or Jaccard >= jaccard_min={jaccard_min}")
+            + "): " + "; ".join(
+                f"{r.final_spec} vs {r.dev_spec}: {r.n_shared}/{r.n_final} shared "
+                f"(containment {r.containment:.2f}, Jaccard {r.jaccard:.2f})"
+                for r in overlap[bad].itertuples()))

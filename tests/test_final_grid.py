@@ -13,6 +13,8 @@ from evaluation.final_grid import (
     GridConfig,
     base_report,
     build_grid,
+    dev_overlap,
+    dev_usage,
     grid_specs,
     spec_signature,
 )
@@ -199,8 +201,93 @@ def test_guard_rejects_a_dev_spec_with_another_name(tmp_path, final_cfg, data):
         plan_experiment(data.prices, data.events, cfg, data.benchmarks)
 
 
+# PR #18's configs/experiment_agent_dev.yaml dev specs (agent/system branch), inline
+# because the file is not on main.
+PR18_DEV_SPECS = [
+    {"spec_id": "dev_new_program_large_up150bp", "event_type": "buyback",
+     "condition": 'is_new_program == True and mcap_bucket == "large"', "effect": 0.015,
+     "direction": 1, "strength": "moderate", "complexity": "conjunction",
+     "feature_type": "structured"},
+    {"spec_id": "dev_rationale_excess_cash_down150bp", "event_type": "buyback",
+     "text_feature": {"feature": "buyback_rationale", "equals": "fake_excess_cash"},
+     "effect": 0.015, "direction": -1, "strength": "moderate", "complexity": "single",
+     "feature_type": "text"},
+]
+
+
+def agent_dev(specs: list[dict]) -> dict:
+    """An agent.experiment {experiment, dev} config planting these specs at seed 9001."""
+    return {"experiment": {"experiment_id": "dev", "base_seed": 9000, "n_planted": 0,
+                           "n_placebo": 0, "holding_days": 5},
+            "dev": {"planted": [{"seed": 9001, "specs": specs}], "placebo": []}}
+
+
+def dev_spec(base, spec_id: str, condition: str | None = None, **update) -> dict:
+    """A dev spec on a final base's events, different in effect (so not the same
+    signature), with condition replacing the base's."""
+    spec = base.model_dump(exclude={"seed", "holding_days"})
+    spec.update(spec_id=spec_id, effect=0.015, strength="moderate", **update)
+    if condition is not None:
+        spec["condition"] = condition
+    return spec
+
+
+def final_base(final_cfg, name: str):
+    return next(c.plant for c in build_grid(small_grid(final_cfg, 2), 5)
+                if c.plant.spec_id.startswith(name))
+
+
+def test_final_grid_does_not_overlap_pr18_dev_specs(tmp_path, final_cfg, data):
+    cfg = guarded(tmp_path, final_cfg, dev=agent_dev(PR18_DEV_SPECS))
+    plan_experiment(data.prices, data.events, cfg, data.benchmarks)
+    usage = dev_usage(cfg.dev_guard.dev_configs, data.events)
+    assert len(usage.agent_specs) == 2
+    report = dev_overlap([c.plant for c in build_grid(final_cfg.grid, 5)], usage.agent_specs,
+                         data.events)
+    assert len(report) == 4 * 2 and (report["n_variants"] == 4).all()
+    assert (report["n_shared"] == 0).all()
+
+
+def test_guard_rejects_a_final_base_inside_a_dev_spec(tmp_path, final_cfg, data):
+    """The excess-cash case: a small-cap base nested in an all-caps dev spec has a low
+    Jaccard but containment 1."""
+    base = final_base(final_cfg, "buyback_rationale_undervalued_small")
+    broader = dev_spec(base, "dev_undervalued_all_caps", condition="")
+    cfg = guarded(tmp_path, final_cfg, dev=agent_dev([broader]))
+    with pytest.raises(ValueError, match=rf"{base.spec_id} vs .*dev_undervalued_all_caps: "
+                                         r"\d+/\d+ shared \(containment 1\.00, Jaccard 0\.[0-5]"):
+        plan_experiment(data.prices, data.events, cfg, data.benchmarks)
+
+
+def test_guard_rejects_a_dev_spec_inside_a_final_base(tmp_path, final_cfg, data):
+    base = final_base(final_cfg, "dividend_large")
+    narrower = dev_spec(base, "dev_large_raises",
+                        condition=f"{base.condition} and dividend_change_pct > 0")
+    cfg = guarded(tmp_path, final_cfg, dev=agent_dev([narrower]))
+    with pytest.raises(ValueError, match=f"{base.spec_id} vs .*dev_large_raises"):
+        plan_experiment(data.prices, data.events, cfg, data.benchmarks)
+    # Below max_containment (and jaccard_min) it passes.
+    loose = cfg.dev_guard.model_copy(update={"max_containment": 0.9})
+    plan_experiment(data.prices, data.events, cfg.model_copy(update={"dev_guard": loose}),
+                    data.benchmarks)
+
+
+def test_guard_rejects_a_dev_spec_at_jaccard_min(tmp_path, final_cfg, data):
+    """With containment allowed, the Jaccard check still catches the same targets under
+    another effect (a different signature)."""
+    base = final_base(final_cfg, "dividend_raise_small")
+    same = dev_spec(base, "dev_raise_small_again")
+    cfg = guarded(tmp_path, final_cfg, dev=agent_dev([same]))
+    cfg = cfg.model_copy(update={"dev_guard": cfg.dev_guard.model_copy(
+        update={"max_containment": 1.0})})
+    with pytest.raises(ValueError, match=r"Jaccard >= jaccard_min=.*"
+                                         r"dev_raise_small_again: .*Jaccard 1\.00"):
+        plan_experiment(data.prices, data.events, cfg, data.benchmarks)
+
+
 def test_final_grid_is_disjoint_from_the_fake_v1_grid(final_cfg, data):
-    """configs/final.yaml guards against configs/experiment.yaml's default grid."""
+    """configs/final.yaml guards against configs/experiment.yaml's default grid: seeds
+    and signatures only (its specs are runner-test specs, not agent dev specs)."""
     cfg = final_cfg.model_copy(update={"n_planted": 0, "n_placebo": 1, "plant_min_events": 1})
     plan_experiment(data.prices, data.events, cfg, data.benchmarks)
 
