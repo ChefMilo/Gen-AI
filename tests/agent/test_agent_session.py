@@ -84,7 +84,7 @@ def test_stubs_satisfy_the_ports():
 
 
 def test_agent_systems_are_finding_systems_without_r0():
-    assert set(get_args(AgentSystem)) == set(get_args(System)) - {"R0"}
+    assert set(get_args(AgentSystem)) == set(get_args(System)) - {"R0", "stub"}
 
 
 @pytest.mark.parametrize("system", ["R0", "R4", "r2"])

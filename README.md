@@ -57,3 +57,15 @@ python -m ingest.run collect       # fetch, retry, derive, save events.parquet
 
 `--limit N` runs the first N filings only (saved under `results/extract/`, not to Drive). Replies are cached in `results/extract/`, so reruns are free.
 
+
+## Final experiment plan
+
+`configs/final.yaml` (`final-v1`) defines the frozen final evaluation. Its planted grid is built in code (`src/evaluation/final_grid.py`) from the config: 4 strengths × single/conjunction × structured/text, one spec per cell. Plan construction raises if a seed or spec (compared by canonical signature) is shared with the dev configs. Everything below runs offline, with no LLM calls:
+
+```bash
+python -m evaluation.run --config configs/final.yaml --dry-run --systems r0  # build + check the frozen hash
+python scripts/oracle_check.py      # results/final-v1/oracle.csv: is each planted cell findable?
+python scripts/estimate_cost.py     # sessions x tokens x price per LLM system
+```
+
+`configs/final.plan.sha256` holds the hash of the canonical `plan.json`. The runner warns when a `final-v1` plan differs from it, and `--freeze-plan` re-records it (do that only on purpose).

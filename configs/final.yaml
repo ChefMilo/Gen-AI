@@ -1,0 +1,73 @@
+# Final evaluation plan (python -m evaluation.run --config configs/final.yaml).
+# FROZEN: the plan this builds is hashed in configs/final.plan.sha256 and the runner
+# warns when a run's plan differs. Keys left out come from configs/default.yaml
+# (backtest_budget, alpha, jaccard_min, plant_min_events, research_start/end).
+
+experiment_id: final-v1
+# 16 grid cells, at most 4 per universe; nested cells (a base and its small-cap
+# conjunction) never share one. See evaluation.plan for how specs are spread.
+n_planted: 16
+n_placebo: 10
+specs_per_universe: 4
+base_seed: 10000  # final seeds are 10000+; dev seeds stay below (dev_guard)
+holding_days: 5
+include_real: true  # research period only (load_base_data cuts the data at research_end)
+max_dropped_share: 0.1
+systems:
+  names: [r0, r1, r2, r3, r3-u]
+  modules: [agent.systems]  # registers r1, r2, r3, r3-u (not on main yet)
+n_boot: 2000
+
+data:
+  source: synthetic
+  n_tickers: 120
+  start: 2015-01-01
+  end: 2026-12-31
+  seed: 0
+  events_seed: 0
+
+# Planted grid (evaluation.final_grid): strengths x complexity x feature type, one spec
+# per cell. Each feature type has one base per strength, in order, so no base is planted
+# at two strengths. Directions alternate, opposite to the dev grid's
+# (universes.planted.GRID_DIRECTIONS) at the strengths both have.
+grid:
+  strengths: [0.005, 0.01, 0.02, 0.04]
+  directions: [1, -1, 1, -1]
+  complexities: [single, conjunction]
+  conjunction:
+    - {field: mcap_bucket, op: "==", value: small}
+  bases:
+    structured:
+      - name: dividend_raise
+        event_type: dividend
+        conditions: [{field: dividend_change_pct, op: ">", value: 10.0}]
+      - name: buyback_new_program
+        event_type: buyback
+        conditions: [{field: is_new_program, op: "==", value: true}]
+      - name: buyback_large
+        event_type: buyback
+        conditions: [{field: buyback_pct_mcap, op: ">", value: 6.0}]
+      - name: buyback_existing_program
+        event_type: buyback
+        conditions: [{field: is_new_program, op: "==", value: false}]
+    text:  # labels by name; they must be in the event data's label set
+      - name: dividend_framing_growth
+        event_type: dividend
+        text_filter: {feature: dividend_framing, equals: fake_growth}
+      - name: buyback_rationale_undervalued
+        event_type: buyback
+        text_filter: {feature: buyback_rationale, equals: fake_undervalued}
+      - name: buyback_rationale_excess_cash
+        event_type: buyback
+        text_filter: {feature: buyback_rationale, equals: fake_excess_cash}
+      - name: buyback_rationale_offset_dilution
+        event_type: buyback
+        text_filter: {feature: buyback_rationale, equals: fake_offset_dilution}
+
+dev_guard:
+  min_seed: 10000
+  dev_configs:
+    - configs/experiment.yaml  # fake-v1: seeds 0-1009, default_spec_grid
+    - configs/experiment_agent_dev.yaml  # PR #18 (agent dev plan); skipped if absent
+
+plan_sha256_file: configs/final.plan.sha256

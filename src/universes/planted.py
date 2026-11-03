@@ -49,7 +49,7 @@ PLANTED_TEXT_LABELS = {
     "buyback_rationale": "fake_undervalued",
 }
 
-Strength = Literal["very_weak", "weak", "moderate", "strong"]
+Strength = Literal["very_weak", "weak", "moderate", "strong", "very_strong"]
 Complexity = Literal["single", "conjunction"]
 FeatureType = Literal["structured", "text"]
 

@@ -48,8 +48,10 @@ from evaluation.plan import (
     ExperimentConfig,
     ExperimentPlan,
     UniverseEntry,
+    frozen_plan_sha256,
     load_experiment_config,
     plan_experiment,
+    plan_sha256,
     save_plan,
 )
 from evaluation.stats import compare_systems, detection_curve_data, system_summary
@@ -124,6 +126,33 @@ def load_base_data(cfg: ExperimentConfig) -> BaseData:
                               cfg.research_end)
 
 
+def check_frozen_plan(plan: ExperimentPlan) -> str:
+    """The plan's hash; warns if the config freezes a different one (or none yet)."""
+    actual = plan_sha256(plan)
+    cfg = plan.config
+    if cfg.plan_sha256_file is None:
+        return actual
+    frozen = frozen_plan_sha256(cfg)
+    if frozen is None:
+        log.warning("%s: no frozen plan hash in %s yet (this plan: %s)", cfg.experiment_id,
+                    cfg.plan_sha256_file, actual)
+    elif frozen != actual:
+        log.warning("%s: PLAN CHANGED. plan.json hashes to %s, but %s freezes %s; results "
+                    "from this run are not the frozen experiment", cfg.experiment_id, actual,
+                    cfg.plan_sha256_file, frozen)
+    return actual
+
+
+def freeze_plan(plan: ExperimentPlan) -> Path:
+    """Write the plan's hash to cfg.plan_sha256_file."""
+    cfg = plan.config
+    if cfg.plan_sha256_file is None:
+        raise ValueError("the config has no plan_sha256_file to freeze the plan in")
+    path = REPO_ROOT / cfg.plan_sha256_file
+    path.write_text(f"{plan_sha256(plan)}  {cfg.experiment_id}/plan.json\n", encoding="utf-8")
+    return path
+
+
 def pair_seed(base_seed: int, system: str, universe_id: str) -> int:
     digest = hashlib.sha256(f"{base_seed}:{system}:{universe_id}".encode()).digest()
     return int.from_bytes(digest[:4], "big") >> 1
@@ -163,6 +192,7 @@ class ExperimentOutcome:
     tables: MetricsTables | None = None
     summary_files: dict[str, Path] = field(default_factory=dict)
     seconds: dict[str, float] = field(default_factory=dict)
+    plan_sha256: str | None = None
 
 
 def _run_system(system: ResearchSystem, view, budget: int, seed: int,
@@ -319,12 +349,13 @@ def run_experiment(
     start = time.perf_counter()
     plan = plan_experiment(data.prices, data.events, cfg, data.benchmarks)
     save_plan(plan, out_dir / PLAN_FILE)
+    outcome_sha = check_frozen_plan(plan)
     seconds["plan"] = time.perf_counter() - start
 
     start = time.perf_counter()
     builds = build_universes(out_dir, plan.universes, plan.fingerprint, data)
     seconds["build"] = time.perf_counter() - start
-    outcome = ExperimentOutcome(plan=plan, builds=builds, seconds=seconds)
+    outcome = ExperimentOutcome(plan=plan, builds=builds, seconds=seconds, plan_sha256=outcome_sha)
     if dry_run:
         return outcome
 
@@ -350,6 +381,7 @@ def _report(outcome: ExperimentOutcome, out_dir: Path) -> str:
         f"universes: {len(built)} built, {len(outcome.builds) - len(built)} reused, "
         f"{sum(b.bytes for b in outcome.builds) / 1e6:.1f} MB on disk",
         "times (s): " + ", ".join(f"{k} {v:.1f}" for k, v in outcome.seconds.items()),
+        f"plan sha256: {outcome.plan_sha256}",
     ]
     if outcome.pairs:
         counts = pd.Series([p.status for p in outcome.pairs]).value_counts().to_dict()
@@ -369,6 +401,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", type=Path, help="default: results/<experiment_id>")
     parser.add_argument("--dry-run", action="store_true", help="plan and build universes only")
     parser.add_argument("--no-resume", action="store_true", help="rerun finished pairs")
+    parser.add_argument("--freeze-plan", action="store_true",
+                        help="write the plan's hash to the config's plan_sha256_file")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -384,6 +418,8 @@ def main(argv: list[str] | None = None) -> int:
     outcome = run_experiment(cfg, systems, out_dir, resume=not args.no_resume,
                              dry_run=args.dry_run)
     print(_report(outcome, out_dir))
+    if args.freeze_plan:
+        print(f"plan frozen: {outcome.plan_sha256} -> {freeze_plan(outcome.plan)}")
     return 1 if any(p.status == "failed" for p in outcome.pairs) else 0
 
 

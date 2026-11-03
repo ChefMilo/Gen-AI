@@ -27,6 +27,10 @@ Assignment (deterministic per base_seed, ClashIndex counts = find_clashes counts
    lexicographic order: specs over the hard limits, repeated strengths, a missing
    feature type, clashing targets.
 
+With a grid: block (configs/final.yaml) the kept specs are evaluation.final_grid's
+cells instead of default_spec_grid, all of them (a cell short of targets raises), and a
+dev_guard: block makes plan_experiment raise if a seed or spec is shared with dev.
+
 Placebo universes use seeds base_seed + 1000 + i; planted universe i uses base_seed + i
 (its specs carry that seed). There is one "real" universe, with no truths, for later
 holdout work.
@@ -47,6 +51,7 @@ import pandas as pd
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from evaluation.final_grid import DevGuardConfig, GridConfig, check_dev_overlap, grid_specs
 from evaluation.universe_record import UniverseType
 from universes.placebo import DEFAULT_MIN_GAP_DAYS
 from universes.planted import (
@@ -128,6 +133,11 @@ class ExperimentConfig(BaseModel):
     # the truth, so a finding on the spec's own definition scores Jaccard = kept share.
     max_dropped_share: float = Field(0.1, ge=0, le=1)
     data: DataConfig = DataConfig()
+    # Final experiments: the planted grid built from config (evaluation.final_grid)
+    # instead of default_spec_grid, the dev overlap guard, and the frozen plan hash.
+    grid: GridConfig | None = None
+    dev_guard: DevGuardConfig | None = None
+    plan_sha256_file: str | None = None  # relative to the repo root
 
     @property
     def system_names(self) -> list[str]:
@@ -537,8 +547,13 @@ def plan_experiment(
     cfg = cfg.resolved()
     if benchmarks is None:
         benchmarks = pd.DataFrame(columns=["date", "ticker", "ret"])
-    kept, dropped = default_spec_grid(events, cfg.plant_min_events, cfg.holding_days,
-                                      cfg.base_seed)
+    if cfg.grid is not None:
+        kept = grid_specs(cfg.grid, events, cfg.plant_min_events, cfg.holding_days,
+                          cfg.base_seed)
+        dropped = []
+    else:
+        kept, dropped = default_spec_grid(events, cfg.plant_min_events, cfg.holding_days,
+                                          cfg.base_seed)
     if cfg.n_planted:
         index = ClashIndex(prices, events, kept)
         assigned = assign_specs(kept, index, cfg.n_planted, cfg.specs_per_universe,
@@ -568,6 +583,10 @@ def plan_experiment(
         universes.append(UniverseEntry(universe_id=next(ids), universe_type="real",
                                        holding_days=cfg.holding_days))
 
+    if cfg.dev_guard is not None:  # a hard check on every plan, not just in tests
+        seeds = {cfg.base_seed} | {u.seed for u in universes if u.seed is not None}
+        check_dev_overlap(seeds, kept, cfg.dev_guard, events)
+
     appearances = {s.spec_id: 0 for s in kept}
     for specs in assigned:
         for s in specs:
@@ -578,6 +597,22 @@ def plan_experiment(
         dropped_specs=dropped, appearances=appearances, planned_clashes=clashes,
         universes=universes,
     )
+
+
+def plan_sha256(plan: ExperimentPlan) -> str:
+    """SHA-256 of the canonical plan JSON (sorted keys, no whitespace)."""
+    text = json.dumps(plan.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def frozen_plan_sha256(cfg: ExperimentConfig) -> str | None:
+    """The hash recorded in cfg.plan_sha256_file, or None if there is none yet."""
+    if cfg.plan_sha256_file is None:
+        return None
+    path = REPO_ROOT / cfg.plan_sha256_file
+    if not path.exists():
+        return None
+    return path.read_text(encoding="utf-8").split()[0]
 
 
 def save_plan(plan: ExperimentPlan, path: Path) -> None:
