@@ -33,7 +33,7 @@ def load_dotenv(path: Path = REPO_ROOT / ".env") -> None:
     """KEY=value lines from .env into os.environ, without overriding what is set."""
     if not path.is_file():
         return
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -109,12 +109,12 @@ class LLM:
 
     def cached(self, system: str, messages: Messages) -> str | None:
         path = self._path(system, messages)
-        return json.loads(path.read_text())["reply"] if path.is_file() else None
+        return json.loads(path.read_text(encoding="utf-8"))["reply"] if path.is_file() else None
 
     def _store(self, system: str, messages: Messages, reply: str, usage: dict) -> None:
         path = self._path(system, messages)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"reply": reply, "usage": usage}))
+        path.write_text(json.dumps({"reply": reply, "usage": usage}), encoding="utf-8")
 
     def ask(self, system: str, messages: Messages) -> str:
         reply = self.cached(system, messages)

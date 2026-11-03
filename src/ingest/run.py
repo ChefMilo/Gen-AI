@@ -29,10 +29,12 @@ from store.schema import Event
 OUT = REPO_ROOT / "results" / "extract"
 CACHE = OUT / "llm_cache"
 BATCH = OUT / "batch.json"
+PASSAGES = OUT / "passages.jsonl"  # accession_no -> message and excerpts, saved while reading
 FILING_INDEX = Path("index/filing_index.parquet")
 UNIVERSE = Path("universe.csv")
 PRICES = Path("prices/prices.parquet")
 WORKERS = 8
+BATCH_SIZE = 500  # requests per batch upload: small uploads finish and show progress
 CHARS_PER_TOKEN = 4  # rough, for the estimate
 
 
@@ -54,10 +56,43 @@ def _request(base: Path, row: dict) -> tuple[str, str, str]:
     return row["accession_no"], message, excerpts
 
 
+def _load_passages() -> dict[str, tuple[str, str]]:
+    if not PASSAGES.is_file():
+        return {}
+    out = {}
+    for line in PASSAGES.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:  # a line cut off by an interrupted run
+            continue
+        if row.get("v") == extract.EXTRACTOR_VERSION:  # passages from older code are re-read
+            out[row["id"]] = (row["message"], row["excerpts"])
+    return out
+
+
 def _requests(base: Path, rows: pd.DataFrame) -> list[tuple[str, str, str]]:
-    records = rows.to_dict("records")
-    with ThreadPoolExecutor(WORKERS) as pool:  # reading the text from Drive is the slow part
-        return list(pool.map(lambda r: _request(base, r), records))
+    """(custom_id, message, excerpts) per filing. Text read from Drive is saved to
+    results/extract/passages.jsonl as it goes, so later runs and reruns skip the reading."""
+    known = _load_passages()
+    records = [r for r in rows.to_dict("records") if r["accession_no"] not in known]
+    if records:
+        print(f"  reading {len(records)} filings from Drive ({len(known)} already saved)")
+        OUT.mkdir(parents=True, exist_ok=True)
+        with (
+            PASSAGES.open("a", encoding="utf-8") as f,
+            ThreadPoolExecutor(WORKERS) as pool,
+        ):
+            for i, (cid, message, excerpts) in enumerate(
+                pool.map(lambda r: _request(base, r), records), start=1
+            ):
+                row = {"id": cid, "message": message, "excerpts": excerpts}
+                row["v"] = extract.EXTRACTOR_VERSION
+                f.write(json.dumps(row) + "\n")
+                known[cid] = (message, excerpts)
+                if i % 250 == 0 or i == len(records):
+                    f.flush()
+                    print(f"  read {i}/{len(records)} filings", flush=True)
+    return [(r, *known[r]) for r in rows["accession_no"]]
 
 
 def _first_messages(requests):
@@ -162,37 +197,77 @@ def _as_records(events: pd.DataFrame) -> list[dict]:
     return [{k: clean(v) for k, v in r.items()} for r in events.to_dict("records")]
 
 
+def _load_state() -> dict:
+    state = json.loads(BATCH.read_text())
+    if "batches" not in state:  # an older single-batch file
+        state["batches"] = [{"id": state.pop("batch_id"), "custom_ids": []}]
+        state["batches"] = [b for b in state["batches"] if b["id"]]
+    return state
+
+
+def _save_state(state: dict) -> None:
+    OUT.mkdir(parents=True, exist_ok=True)
+    BATCH.write_text(json.dumps(state))
+
+
 def cmd_submit(base: Path, limit: int | None) -> None:
+    """Upload in batches of BATCH_SIZE; each batch id is saved as soon as it is created, so a
+    rerun after an interruption skips what was already sent."""
     rows = candidates(base, limit)
+    print(f"Reading {len(rows)} filings...", flush=True)
     requests = [r for r in _requests(base, rows) if r[2].strip()]
     llm = LLM(CACHE)
-    batch_id = llm.submit_batch(_first_messages(requests))
-    OUT.mkdir(parents=True, exist_ok=True)
-    BATCH.write_text(json.dumps({"batch_id": batch_id, "limit": limit, "model": llm.model}))
-    if batch_id is None:
-        print("Every filing is already cached: run collect.")
-    else:
-        print(f"Submitted {len(requests)} filings as batch {batch_id} ({llm.model}).")
-        print("Check with: python -m ingest.run status")
+    state = _load_state() if BATCH.is_file() else {}
+    if state.get("limit") != limit or state.get("model") != llm.model:
+        state = {"limit": limit, "model": llm.model, "batches": []}
+    sent = {cid for b in state["batches"] for cid in b["custom_ids"]}
+    todo = [r for r in requests if r[0] not in sent]
+    print(f"{len(requests)} filings to extract, {len(todo)} not yet submitted.", flush=True)
+    for start in range(0, len(todo), BATCH_SIZE):
+        chunk = todo[start : start + BATCH_SIZE]
+        batch_id = llm.submit_batch(_first_messages(chunk))
+        if batch_id:
+            state["batches"].append({"id": batch_id, "custom_ids": [r[0] for r in chunk]})
+        _save_state(state)
+        print(f"  submitted {start + len(chunk)}/{len(todo)} ({batch_id})", flush=True)
+    _save_state(state)
+    print(f"Done: {len(state['batches'])} batches. Check with: python -m ingest.run status")
+
+
+def _statuses(llm: LLM, state: dict) -> list[dict]:
+    return [llm.batch_status(b["id"]) for b in state["batches"]]
 
 
 def cmd_status() -> None:
-    state = json.loads(BATCH.read_text())
-    print(json.dumps(LLM(CACHE, model=state["model"]).batch_status(state["batch_id"]), indent=2))
+    state = _load_state()
+    statuses = _statuses(LLM(CACHE, model=state["model"]), state)
+    totals: dict[str, int] = {}
+    for st in statuses:
+        for key, value in st.items():
+            if key != "status":
+                totals[key] = totals.get(key, 0) + value
+    ended = sum(st["status"] == "ended" for st in statuses)
+    print(f"{ended}/{len(statuses)} batches ended; requests: {totals}")
+    if statuses and ended == len(statuses):
+        print("All done: run python -m ingest.run collect")
 
 
 def cmd_collect(base: Path) -> None:
-    state = json.loads(BATCH.read_text())
+    state = _load_state()
     llm = LLM(CACHE, model=state["model"])
     rows = candidates(base, state["limit"])
-    if state["batch_id"]:
-        status = llm.batch_status(state["batch_id"])
-        if status["status"] != "ended":
-            print(f"Batch not finished yet: {status}")
+    if state["batches"]:
+        statuses = _statuses(llm, state)
+        if any(st["status"] != "ended" for st in statuses):
+            done = sum(st["status"] == "ended" for st in statuses)
+            print(f"Not finished yet: {done}/{len(statuses)} batches ended.")
             return
+        print(f"Reading {len(rows)} filings...", flush=True)
         requests = [r for r in _requests(base, rows) if r[2].strip()]
-        failed = llm.collect_batch(state["batch_id"], _first_messages(requests))
-        print(f"Collected the batch; {len(failed)} requests failed and will be retried live.")
+        failed = []
+        for b in state["batches"]:
+            failed += llm.collect_batch(b["id"], _first_messages(requests))
+        print(f"Collected the batches; {len(failed)} requests failed and will be retried live.")
     events, failures = run_extraction(base, rows, llm)  # cached; only retries cost
     events = _derive(base, events)
     path = store_events.save_events(events, None if not state["limit"] else OUT / "events.parquet")

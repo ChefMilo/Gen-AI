@@ -96,3 +96,19 @@ def test_derive_adds_sector_and_sorts():
     out = derive.derive(events, prices, universe)
     assert out["sector"].tolist() == ["Energy", "Energy"]
     assert out["event_id"].tolist() == ["acc1-dividend-1", "acc2-dividend-1"]
+
+
+def test_mark_duplicates_when_one_copy_leaves_dates_out():
+    release = _event(1, date(2020, 2, 10))  # earnings release: amount only
+    dividend_8k = _event(2, date(2020, 3, 17), record_date=date(2020, 3, 31))
+    other_amount = _event(3, date(2020, 3, 20), dividend_per_share=0.25)
+    out = derive.mark_duplicates(_frame(release, dividend_8k, other_amount)).set_index("event_id")
+    assert out["is_new_announcement"].tolist() == [True, False, True]
+    assert out.loc["acc2-dividend-1", "flags"] == ["duplicate_of:acc1-dividend-1"]
+
+
+def test_same_amount_next_quarter_is_not_a_copy():
+    q1 = _event(1, date(2024, 1, 5), record_date=date(2024, 2, 1))
+    q2 = _event(2, date(2024, 2, 1), record_date=date(2024, 5, 1))  # within 45 days, new dates
+    out = derive.mark_duplicates(_frame(q1, q2))
+    assert out["is_new_announcement"].tolist() == [True, True]

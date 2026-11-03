@@ -100,6 +100,7 @@ def data(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "OUT", tmp_path / "out")
     monkeypatch.setattr(run, "CACHE", tmp_path / "out" / "cache")
     monkeypatch.setattr(run, "BATCH", tmp_path / "out" / "batch.json")
+    monkeypatch.setattr(run, "PASSAGES", tmp_path / "out" / "passages.jsonl")
     prices._read_calendar.cache_clear()
     return tmp_path
 
@@ -125,7 +126,7 @@ def test_run_extraction_builds_derived_events(data):
     assert e["event_id"] == f"{ACC}-dividend-1" and e["extraction_status"] == "passed"
     assert e["first_tradeable_date"] == date(2024, 5, 2)
     assert e["mcap_usd"] == 1e9 and e["sector"] == "Industrials"
-    assert e["extractor_version"] == "extract-1.0+m"
+    assert e["extractor_version"] == "extract-1.2+m"
 
 
 def test_run_extraction_records_failed_filings(data):
@@ -138,7 +139,7 @@ def test_batch_submit_then_collect_saves_events(data, monkeypatch):
     client = fake_client()
     monkeypatch.setattr(llm_module.LLM, "_client", lambda self: client)
     run.cmd_submit(data, limit=None)
-    assert json.loads(run.BATCH.read_text())["batch_id"] == "batch-1"
+    assert json.loads(run.BATCH.read_text())["batches"][0]["id"] == "batch-1"
     assert client.messages.batches.submitted[0]["custom_id"] == ACC
     run.cmd_collect(data)
     assert client.messages.sent == []  # everything came from the batch
@@ -146,3 +147,20 @@ def test_batch_submit_then_collect_saves_events(data, monkeypatch):
     assert saved["event_id"].tolist() == [f"{ACC}-dividend-1"]
     report = json.loads((run.OUT / "report.json").read_text())
     assert report["events"] == 1 and report["failed_filings"] == 0
+
+
+def test_submit_in_chunks_and_resume(data, monkeypatch):
+    client = fake_client()
+    monkeypatch.setattr(llm_module.LLM, "_client", lambda self: client)
+    monkeypatch.setattr(run, "BATCH_SIZE", 1)
+    run.cmd_submit(data, limit=None)
+    run.cmd_submit(data, limit=None)  # nothing left to send
+    state = json.loads(run.BATCH.read_text())
+    assert [b["custom_ids"] for b in state["batches"]] == [[ACC]]
+
+
+def test_passages_are_saved_and_reused(data, monkeypatch):
+    rows = run.candidates(data)
+    first = run._requests(data, rows)
+    (data / "text" / "edgar" / TICKER / ACC / "ex99.txt").unlink()  # the Drive is gone
+    assert run._requests(data, rows) == first  # read from results/extract/passages.jsonl

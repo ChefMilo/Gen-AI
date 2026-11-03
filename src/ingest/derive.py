@@ -12,45 +12,60 @@
 
 import pandas as pd
 
-DUPLICATE_DAYS = 30  # same-key buyback events further apart than this are separate
+DUPLICATE_DAYS = {"dividend": 45, "buyback": 30}  # copies are filed within this many days
 
 
-def _key(row) -> tuple | None:
+def _same(a, b) -> bool:
+    """Equal, or one side missing (one filing states a date the other leaves out)."""
+    if pd.isna(a) or pd.isna(b):
+        return True
+    if isinstance(a, float | int):
+        return abs(float(a) - float(b)) <= 1e-6 * max(abs(float(a)), 1.0)
+    return a == b
+
+
+def _is_copy(row, first) -> bool:
     if row["event_type"] == "dividend":
-        if pd.isna(row["dividend_per_share"]):
-            return None
-        dates = (row["record_date"], row["payable_date"])
-        if all(pd.isna(d) for d in dates):
-            dates = (row["announcement_date"], None)
-            if pd.isna(row["announcement_date"]):
-                return None
-        return ("dividend", round(float(row["dividend_per_share"]), 6), *map(str, dates))
-    size = (row["buyback_amount_usd"], row["buyback_shares"])
-    if all(pd.isna(s) for s in size):
-        return None
-    return ("buyback", *map(str, size), str(row["is_new_program"]))
+        if pd.isna(row["dividend_per_share"]) or pd.isna(first["dividend_per_share"]):
+            return False
+        fields = ("dividend_per_share", "dividend_kind", "record_date", "payable_date")
+    else:
+        sizes = ("buyback_amount_usd", "buyback_shares")
+        if not any(pd.notna(row[f]) and pd.notna(first[f]) for f in sizes):
+            return False  # no size stated on both sides: can't tell
+        fields = (*sizes, "is_new_program")
+    return all(_same(row[f], first[f]) for f in fields)
 
 
 def mark_duplicates(events: pd.DataFrame) -> pd.DataFrame:
-    """Later copies of an already announced event become not new, flagged."""
+    """Later copies of an already announced event become not new, flagged.
+
+    A copy is a new event of the same company and type, filed within DUPLICATE_DAYS of
+    an earlier one, whose amounts and dates match it (or are missing on one side).
+    """
     events = events.sort_values(["first_tradeable_date", "acceptance_datetime", "event_id"])
     events = events.reset_index(drop=True)
-    seen: dict[tuple, tuple[str, pd.Timestamp]] = {}
+    kept: dict[tuple, list[int]] = {}  # (ticker, type) -> rows kept as new
     for i, row in events.iterrows():
         if not row["is_new_announcement"]:
             continue
-        key = _key(row)
-        if key is None:
-            continue
-        key = (row["ticker"], *key)
+        group = kept.setdefault((row["ticker"], row["event_type"]), [])
         day = pd.Timestamp(row["first_tradeable_date"])
-        if key in seen:
-            first_id, first_day = seen[key]
-            if key[1] == "dividend" or (day - first_day).days <= DUPLICATE_DAYS:
-                events.at[i, "is_new_announcement"] = False
-                events.at[i, "flags"] = [*row["flags"], f"duplicate_of:{first_id}"]
-                continue
-        seen[key] = (row["event_id"], day)
+        limit = DUPLICATE_DAYS[row["event_type"]]
+        first = next(
+            (
+                j
+                for j in reversed(group)
+                if (day - pd.Timestamp(events.at[j, "first_tradeable_date"])).days <= limit
+                and _is_copy(row, events.loc[j])
+            ),
+            None,
+        )
+        if first is None:
+            group.append(i)
+            continue
+        events.at[i, "is_new_announcement"] = False
+        events.at[i, "flags"] = [*row["flags"], f"duplicate_of:{events.at[first, 'event_id']}"]
     return events
 
 

@@ -166,3 +166,60 @@ def test_to_events_numbers_events_and_dates_them():
     assert events[0].first_tradeable_date == date(2024, 5, 3)  # accepted after 16:00
     assert events[0].extraction_status == "passed"
     assert events[2].extraction_status == "flagged" and events[2].flags == ["check: made up"]
+
+
+def test_judgement_fields_reuse_the_value_quote():
+    event = DIV_EVENT | {"evidence": {"dps": 0, "record": 0, "payable": 0}}  # no new / kind
+    [checked] = extract.check_reply(reply([event]), TEXT)
+    assert checked.problems == []
+    assert checked.evidence["is_new_announcement"] == DIV
+    assert checked.evidence["dividend_kind"] == DIV
+
+
+def test_reply_with_prose_after_the_json_is_read():
+    text = (
+        reply([DIV_EVENT])
+        + "\n\nI left out the buyback because only past repurchases were reported."
+    )
+    [checked] = extract.check_reply(text, TEXT)
+    assert checked.problems == []
+
+
+def test_filing_text_reads_utf8(tmp_path):
+    folder = tmp_path / extract.TEXT_DIR / "ACME" / "acc"
+    folder.mkdir(parents=True)
+    (folder / "ex99.txt").write_text("Acme\u2019s Board declared a dividend.", encoding="utf-8")
+    assert extract.filing_text(tmp_path, "ACME", "acc") == "Acme\u2019s Board declared a dividend."
+
+
+def test_record_date_before_filing_means_not_new():
+    event = DIV_EVENT | {"record": "2024-04-20", "payable": "2024-05-10"}
+    [checked] = extract.check_reply(reply([event]), TEXT, date(2024, 5, 2))
+    assert checked.problems == []  # corrected in code, no retry
+    assert checked.fields["is_new_announcement"] is False
+    [e] = extract.to_events([checked], FILING, CALENDAR, datetime(2024, 5, 3), "test")
+    assert e.extraction_status == "passed" and e.flags[0].startswith("auto:")
+
+
+def test_extract_keeps_first_reply_when_the_retry_call_fails():
+    bad = DIV_EVENT | {"dps": 80.0}
+
+    def ask(system, messages):
+        if len(messages) > 1:
+            raise RuntimeError("credit balance is too low")
+        return reply([bad])
+
+    [event] = extract.extract(ask, "msg", TEXT)
+    assert any("retry not made (RuntimeError)" in p for p in event.problems)
+
+
+def test_reply_that_corrects_itself_uses_the_last_json():
+    first = reply([DIV_EVENT | {"dps": 0.99}])
+    text = first + "\n\nWait, the amount is wrong. Let me correct that.\n\n" + reply([DIV_EVENT])
+    [checked] = extract.check_reply(text, TEXT)
+    assert checked.fields["dividend_per_share"] == 0.25
+
+
+def test_reply_cut_off_mid_json_is_unreadable():
+    with pytest.raises(ValueError):
+        extract.check_reply(reply([DIV_EVENT])[:-20], TEXT)
