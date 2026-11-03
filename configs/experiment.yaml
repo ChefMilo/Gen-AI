@@ -17,6 +17,10 @@ include_real: true  # one "real-research" universe with no truths
 # min_gap_days: 10  # default: universes.placebo.DEFAULT_MIN_GAP_DAYS
 max_dropped_share: 0.1  # most of a spec's targets cross-spec clashes may drop
 systems: ["null", "random"]  # quoted: a bare null is YAML's None
+# Or, to load systems registered outside src/evaluation (evaluation.systems.register_system):
+# systems:
+#   names: ["null", "random", "r2"]
+#   modules: [agent.systems]  # imported before the names are looked up
 n_boot: 2000
 
 data:
