@@ -32,6 +32,13 @@ The `note` column says what makes each one tricky. It is a hint, not the answer.
 
 ## Labelling a filing
 
+**The quick way:** `python -m ingest.label next --range G01-G30` (needs `GENAI_DATA_DIR`).
+It shows the filing's dividend and buyback sentences, numbered, asks for each field, takes
+the quote as sentence numbers, checks the answers and does steps 2 to 4 for you. Add
+`--second` for the double-labelled filings (it writes `events_second.csv` and hides the
+`note` hints), `--redo` to replace your labels for a filing, `--all` to see every sentence.
+Split the 60 by `--range` so two people don't label the same filing. By hand:
+
 1. Open its text: `$GENAI_DATA_DIR/text/edgar/<ticker>/<accession_no>/*.txt`. If you need
    the original, `source_url` is the SEC folder.
 2. Add one row to `events.csv` per **common-stock** dividend or buyback the filing
