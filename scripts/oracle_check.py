@@ -15,7 +15,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from evaluation.oracle import findable_rates, judging_rules, oracle_table  # noqa: E402
+from evaluation.oracle import (  # noqa: E402
+    findable_rates,
+    judging_rules,
+    monotone_violations,
+    oracle_table,
+)
 from evaluation.plan import REPO_ROOT, load_experiment_config  # noqa: E402
 from evaluation.run import default_out_dir, load_base_data, run_experiment  # noqa: E402
 
@@ -40,7 +45,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"family: Holm over backtest_budget={cfg.backtest_budget}; alpha={alpha}; "
           f"min_events={min_events}")
     print(f"findable overall: {table['findable'].mean():.1%}")
-    print(findable_rates(table).to_string(index=False))
+    print(findable_rates(table).to_string(index=False, float_format="{:.2f}".format))
+    bad = monotone_violations(table)
+    if bad.empty:
+        print("findability is monotone in strength in every cell")
+    else:
+        print("NOT MONOTONE in strength (findable rate below a weaker strength's):")
+        print(bad.to_string(index=False, float_format="{:.2f}".format))
     return 0
 
 

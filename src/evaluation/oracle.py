@@ -22,7 +22,7 @@ import pandas as pd
 import yaml
 
 from backtest.engine import run_event_study
-from evaluation.final_grid import build_grid
+from evaluation.final_grid import STRENGTH_LABELS, build_grid
 from evaluation.plan import DEFAULT_CONFIG_PATH, ExperimentPlan
 from evaluation.systems import make_view
 from evaluation.universe_store import BaseData, load_universe
@@ -30,7 +30,8 @@ from harness.corrections import holm_adjust
 
 COLUMNS = ["spec_id", "universe_id", "strength", "complexity", "feature_type", "n_events",
            "t", "p_raw", "p_corrected", "findable"]
-GROUPS = ["strength", "complexity", "feature_type"]
+GROUPS = ["complexity", "feature_type", "strength"]
+_STRENGTH_RANK = {label: rank for rank, label in enumerate(STRENGTH_LABELS.values())}
 
 
 def judging_rules(path: Path = DEFAULT_CONFIG_PATH) -> tuple[float, int]:
@@ -74,8 +75,29 @@ def oracle_table(plan: ExperimentPlan, data: BaseData, out_dir: Path,
 
 
 def findable_rates(table: pd.DataFrame) -> pd.DataFrame:
-    """Findable share and count per strength x complexity x feature type."""
-    out = (table.groupby(GROUPS, sort=True)["findable"]
-           .agg(findable_rate="mean", findable="sum", n="count").reset_index())
+    """Findable share and count per complexity x feature type x strength (weakest first),
+    plus the mean |t|."""
+    out = (table.assign(abs_t=table["t"].abs())
+           .groupby(GROUPS, sort=False)
+           .agg(findable_rate=("findable", "mean"), findable=("findable", "sum"),
+                n=("findable", "count"), mean_abs_t=("abs_t", "mean"))
+           .reset_index())
     out["findable"] = out["findable"].astype(int)
-    return out
+    out["_rank"] = out["strength"].map(_STRENGTH_RANK)
+    out = out.sort_values(["complexity", "feature_type", "_rank"], ignore_index=True)
+    return out.drop(columns="_rank")[["complexity", "feature_type", "strength",
+                                      "findable_rate", "findable", "n", "mean_abs_t"]]
+
+
+def monotone_violations(table: pd.DataFrame) -> pd.DataFrame:
+    """Rows of findable_rates whose findable rate is below that of a weaker strength in
+    the same (complexity, feature type) cell."""
+    rates = findable_rates(table)
+    bad = []
+    for _, cell in rates.groupby(["complexity", "feature_type"], sort=False):
+        best = -1.0
+        for i, row in cell.iterrows():
+            if row["findable_rate"] < best:
+                bad.append(i)
+            best = max(best, row["findable_rate"])
+    return rates.loc[bad]

@@ -41,7 +41,13 @@ from typing import Literal
 import pandas as pd
 
 from agent.finding import Finding
-from evaluation.metrics import MetricsTables, UniverseResult, evaluate, metrics_table
+from evaluation.metrics import (
+    MetricsTables,
+    UniverseResult,
+    evaluate,
+    metrics_table,
+    uniform_correction,
+)
 from evaluation.plan import (
     EXPERIMENT_CONFIG_PATH,
     REPO_ROOT,
@@ -279,7 +285,9 @@ def read_record(out_dir: Path, entry: UniverseEntry) -> UniverseRecord:
 
 def evaluate_runs(plan: ExperimentPlan, system_names: list[str],
                   out_dir: Path) -> list[UniverseResult]:
-    """UniverseResults for every finished pair of these systems."""
+    """UniverseResults for every finished pair of these systems, scored under each
+    system's own correction and the uniform re-correction (evaluation.metrics)."""
+    uniform = uniform_correction(plan.config.backtest_budget)
     results = []
     for entry in plan.universes:
         key = entry.cache_key(plan.fingerprint, FORMAT_VERSION)
@@ -291,7 +299,7 @@ def evaluate_runs(plan: ExperimentPlan, system_names: list[str],
             record = record or read_record(out_dir, entry)
             meta = json.loads((path / RUN_META).read_text(encoding="utf-8"))
             results.append(evaluate(name, record, read_findings(path), plan.config.jaccard_min,
-                                    meta.get("metadata", {})))
+                                    meta.get("metadata", {}), uniform=uniform))
     return results
 
 

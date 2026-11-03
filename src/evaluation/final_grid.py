@@ -4,14 +4,20 @@ The grid is code plus config (the grid: block of configs/final.yaml), not a hand
 
     strengths x complexities x feature types
 
-Each feature type lists its bases, one per strength in order, so every cell gets one
-spec and a base is never planted at two strengths (which would give nested
-near-duplicates). A base is a dsl.signal.SignalSpec without holding days or direction:
-event_type plus conditions and/or a text filter. The conjunction level adds the
-grid's conjunction conditions (small caps) to the base. build_grid returns, per cell,
-the SignalSpec a system would have to define to find the plant exactly (used by
-scripts/oracle_check.py) and the PlantSpec that plants it; the PlantSpec's pandas
-condition is rendered from the same conditions, so the two select the same events.
+Each (complexity, feature type) cell has ONE base, planted at every strength, so the
+strength comparison is within a base and never confounded with it. Variants of a base
+select the same targets, and evaluation.plan never puts two of them in one universe.
+A base is a dsl.signal.SignalSpec without holding days or direction: event_type plus
+conditions and/or a text filter. A single base uses one feature (one condition, or the
+text filter); a conjunction base at least two. grid_specs checks that no part of a base
+finds it on its own: the targets of the event type alone (single) or of each feature
+alone (conjunction) must have Jaccard < jaccard_min with the base's targets, or a
+system could match the plant without the feature the cell is meant to test.
+
+build_grid returns, per (base, strength), the SignalSpec a system would have to define
+to find the plant exactly (used by scripts/oracle_check.py) and the PlantSpec that
+plants it; the PlantSpec's pandas condition is rendered from the same conditions, so
+the two select the same events.
 
 Overlap guard (check_dev_overlap, called by evaluation.plan.plan_experiment when the
 config has a dev_guard: block): every universe seed of the final plan must be at least
@@ -33,6 +39,7 @@ from universes.planted import (
     FEATURE_LABELS,
     PlantSpec,
     TextFeatureFilter,
+    eligible,
     select_targets,
 )
 
@@ -43,6 +50,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Strength label per effect size (universes.planted.STRENGTHS plus 4%).
 STRENGTH_LABELS = {0.0025: "very_weak", 0.005: "weak", 0.01: "moderate", 0.02: "strong",
                    0.04: "very_strong"}
+COMPLEXITIES = ("single", "conjunction")
+FEATURE_TYPES = ("structured", "text")
 
 
 class GridBase(BaseModel):
@@ -55,11 +64,9 @@ class GridBase(BaseModel):
     conditions: list[Condition] = []
     text_filter: TextFilter | None = None
 
-    @model_validator(mode="after")
-    def _selects_something(self) -> "GridBase":
-        if not self.conditions and self.text_filter is None:
-            raise ValueError(f"base {self.name}: needs conditions or a text_filter")
-        return self
+    @property
+    def n_features(self) -> int:
+        return len(self.conditions) + int(self.text_filter is not None)
 
 
 class GridConfig(BaseModel):
@@ -69,9 +76,8 @@ class GridConfig(BaseModel):
 
     strengths: list[float] = Field(min_length=1)
     directions: list[Literal[1, -1]]  # one per strength
-    complexities: list[Literal["single", "conjunction"]] = ["single", "conjunction"]
-    conjunction: list[Condition] = Field(min_length=1)  # added at the conjunction level
-    bases: dict[Literal["structured", "text"], list[GridBase]]
+    # complexity -> feature type -> the cell's base
+    bases: dict[Literal["single", "conjunction"], dict[Literal["structured", "text"], GridBase]]
 
     @model_validator(mode="after")
     def _shape(self) -> "GridConfig":
@@ -83,22 +89,28 @@ class GridConfig(BaseModel):
             raise ValueError(f"no strength label for {unknown}; known {sorted(STRENGTH_LABELS)}")
         if len(self.directions) != n:
             raise ValueError("one direction per strength")
-        names = [b.name for bases in self.bases.values() for b in bases]
+        names = [b.name for cells in self.bases.values() for b in cells.values()]
         if len(names) != len(set(names)):
             raise ValueError("base names must be unique")
-        for feature_type, bases in self.bases.items():
-            if len(bases) != n:
-                raise ValueError(f"{feature_type}: one base per strength ({n}), got {len(bases)}")
-            for base in bases:
+        for complexity, cells in self.bases.items():
+            for feature_type, base in cells.items():
+                where = f"{complexity}/{feature_type} base {base.name}"
                 if (feature_type == "text") != (base.text_filter is not None):
-                    raise ValueError(f"base {base.name}: text bases (only) need a text_filter")
-                if feature_type == "text" and base.conditions:
-                    raise ValueError(f"text base {base.name}: no structured conditions")
+                    raise ValueError(f"{where}: text bases (only) need a text_filter")
+                if complexity == "single" and base.n_features != 1:
+                    raise ValueError(f"{where}: a single base uses exactly one feature")
+                if complexity == "conjunction" and base.n_features < 2:
+                    raise ValueError(f"{where}: a conjunction base needs two features or more")
         return self
+
+    def cells(self) -> list[tuple[str, str, GridBase]]:
+        """(complexity, feature type, base) in a fixed order."""
+        return [(c, f, self.bases[c][f]) for f in FEATURE_TYPES for c in COMPLEXITIES
+                if f in self.bases.get(c, {})]
 
 
 class GridCell(BaseModel):
-    """One cell of the grid: the plant and the signal that recovers it exactly."""
+    """One spec of the grid: the plant and the signal that recovers it exactly."""
 
     plant: PlantSpec
     signal: SignalSpec
@@ -155,59 +167,103 @@ def _bp(effect: float) -> int:
     return round(effect * 10_000)
 
 
+def _plant(base: GridBase, conditions, text, effect=0.01, direction=1, holding_days=5,
+           seed=0, complexity="single", feature_type="structured",
+           spec_id=None) -> PlantSpec:
+    return PlantSpec(
+        spec_id=spec_id or base.name, event_type=base.event_type,
+        condition=render_condition(conditions),
+        text_feature=(TextFeatureFilter(feature=text.feature, equals=text.equals)
+                      if text else None),
+        effect=effect, holding_days=holding_days, direction=direction, seed=seed,
+        strength=STRENGTH_LABELS.get(effect, "moderate"), complexity=complexity,
+        feature_type=feature_type,
+    )
+
+
 def build_grid(grid: GridConfig, holding_days: int, seed: int = 0) -> list[GridCell]:
-    """Every cell, in a fixed order: feature type, complexity, strength."""
-    cells = []
-    for feature_type in ("structured", "text"):
-        for complexity in grid.complexities:
-            for k, (effect, direction) in enumerate(zip(grid.strengths, grid.directions,
-                                                        strict=True)):
-                base = grid.bases[feature_type][k]
-                conditions = list(base.conditions)
-                if complexity == "conjunction":
-                    conditions += list(grid.conjunction)
-                sign = "up" if direction > 0 else "down"
-                suffix = "_small" if complexity == "conjunction" else ""
-                spec_id = f"{base.name}{suffix}_{sign}{_bp(effect)}bp"
-                text = base.text_filter
-                plant = PlantSpec(
-                    spec_id=spec_id, event_type=base.event_type,
-                    condition=render_condition(conditions),
-                    text_feature=(TextFeatureFilter(feature=text.feature, equals=text.equals)
-                                  if text else None),
-                    effect=effect, holding_days=holding_days, direction=direction, seed=seed,
-                    strength=STRENGTH_LABELS[effect], complexity=complexity,
-                    feature_type=feature_type,
-                )
-                signal = SignalSpec(
-                    event_type=base.event_type, conditions=conditions, text_filter=text,
-                    holding_days=holding_days, direction="long" if direction > 0 else "short",
-                )
-                cells.append(GridCell(plant=plant, signal=signal))
-    return cells
+    """Every (base, strength), in a fixed order: feature type, complexity, strength."""
+    out = []
+    for complexity, feature_type, base in grid.cells():
+        for effect, direction in zip(grid.strengths, grid.directions, strict=True):
+            sign = "up" if direction > 0 else "down"
+            plant = _plant(base, base.conditions, base.text_filter, effect, direction,
+                           holding_days, seed, complexity, feature_type,
+                           spec_id=f"{base.name}_{sign}{_bp(effect)}bp")
+            signal = SignalSpec(
+                event_type=base.event_type, conditions=list(base.conditions),
+                text_filter=base.text_filter, holding_days=holding_days,
+                direction="long" if direction > 0 else "short",
+            )
+            out.append(GridCell(plant=plant, signal=signal))
+    return out
+
+
+def _parts(base: GridBase) -> list[tuple[str, list, TextFilter | None]]:
+    """What a system could use instead of the whole base: the event type alone for a
+    single base; each feature alone for a conjunction."""
+    if base.n_features == 1:
+        return [("event type alone", [], None)]
+    parts = [(f"{c.field} alone", [c], None) for c in base.conditions]
+    if base.text_filter is not None:
+        parts.append((f"{base.text_filter.feature} alone", [], base.text_filter))
+    return parts
+
+
+def _ids(events: pd.DataFrame, base: GridBase, conditions, text) -> set:
+    if not conditions and text is None:
+        rows = eligible(events)
+        return set(rows.loc[rows["event_type"] == base.event_type, "event_id"])
+    return set(select_targets(events, _plant(base, conditions, text))["event_id"])
+
+
+def base_report(grid: GridConfig, events: pd.DataFrame) -> pd.DataFrame:
+    """Per cell: eligible targets, small-cap share, and the largest Jaccard any part of
+    the base reaches alone (see the module docstring)."""
+    rows = []
+    for complexity, feature_type, base in grid.cells():
+        targets = select_targets(events, _plant(base, base.conditions, base.text_filter))
+        ids = set(targets["event_id"])
+        worst, worst_part = 0.0, ""
+        for name, conditions, text in _parts(base):
+            other = _ids(events, base, conditions, text)
+            union = ids | other
+            jaccard = len(ids & other) / len(union) if union else 0.0
+            if jaccard >= worst:
+                worst, worst_part = jaccard, name
+        small = float((targets["mcap_bucket"] == "small").mean()) if len(ids) else 0.0
+        rows.append({
+            "complexity": complexity, "feature_type": feature_type, "base": base.name,
+            "n_targets": len(ids), "small_share": small,
+            "max_part_jaccard": worst, "part": worst_part,
+        })
+    return pd.DataFrame(rows)
 
 
 def grid_specs(grid: GridConfig, events: pd.DataFrame, min_events: int, holding_days: int,
-               seed: int = 0) -> list[PlantSpec]:
-    """The grid's PlantSpecs. Raises if a text label is not in the data's label set or a
-    cell has fewer than min_events eligible targets: the final grid is never trimmed."""
-    for bases in grid.bases.values():
-        for base in bases:
-            if base.text_filter is not None:
-                labels = FEATURE_LABELS[base.text_filter.feature]
-                if base.text_filter.equals not in labels:
-                    raise ValueError(f"base {base.name}: label {base.text_filter.equals!r} "
-                                     f"is not one of {labels}")
-    specs, short = [], []
-    for cell in build_grid(grid, holding_days, seed):
-        n = len(select_targets(events, cell.plant))
-        if n < min_events:
-            short.append(f"{cell.plant.spec_id} ({n})")
-        specs.append(cell.plant)
-    if short:
-        raise ValueError(f"grid cells with fewer than plant_min_events={min_events} "
-                         f"eligible targets: {', '.join(short)}")
-    return specs
+               seed: int = 0, jaccard_min: float | None = None) -> list[PlantSpec]:
+    """The grid's PlantSpecs. Raises if a text label is not in the data's label set, a
+    base has fewer than min_events eligible targets, or (given jaccard_min) a part of a
+    base matches it alone: the final grid is never trimmed."""
+    for _, _, base in grid.cells():
+        if base.text_filter is not None:
+            labels = FEATURE_LABELS[base.text_filter.feature]
+            if base.text_filter.equals not in labels:
+                raise ValueError(f"base {base.name}: label {base.text_filter.equals!r} "
+                                 f"is not one of {labels}")
+    report = base_report(grid, events)
+    short = report[report["n_targets"] < min_events]
+    if len(short):
+        raise ValueError(f"grid bases with fewer than plant_min_events={min_events} eligible "
+                         f"targets: {dict(zip(short['base'], short['n_targets'], strict=True))}")
+    if jaccard_min is not None:
+        leaky = report[report["max_part_jaccard"] >= jaccard_min]
+        if len(leaky):
+            raise ValueError("grid bases a part of which matches them alone (Jaccard >= "
+                             f"jaccard_min={jaccard_min}): "
+                             + ", ".join(f"{r.base} ({r.part}: {r.max_part_jaccard:.2f})"
+                                         for r in leaky.itertuples()))
+    return [cell.plant for cell in build_grid(grid, holding_days, seed)]
 
 
 # --- Dev overlap guard ------------------------------------------------------------------
@@ -284,4 +340,3 @@ def check_dev_overlap(seeds: set[int], specs: list[PlantSpec], guard: DevGuardCo
     if clashes:
         raise ValueError("final specs identical to dev specs (same signature): "
                          + "; ".join(clashes))
-
