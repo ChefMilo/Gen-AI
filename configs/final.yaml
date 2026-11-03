@@ -1,0 +1,77 @@
+# Final evaluation plan (python -m evaluation.run --config configs/final.yaml).
+# FROZEN: the plan this builds is hashed in configs/final.plan.sha256 and the runner
+# warns when a run's plan differs. Keys left out come from configs/default.yaml
+# (backtest_budget, alpha, jaccard_min, plant_min_events, research_start/end).
+
+experiment_id: final-v1
+# 16 specs (4 bases x 4 strengths). Variants of a base never share a universe and
+# same-event-type bases overlap, so a universe holds a dividend and a buyback spec:
+# 16 universes x 2 = 2 independent appearances per spec. See evaluation.plan.
+n_planted: 16
+n_placebo: 10
+specs_per_universe: 4
+base_seed: 10000  # final seeds are 10000+; dev seeds stay below (dev_guard)
+holding_days: 5
+include_real: true  # research period only (load_base_data cuts the data at research_end)
+max_dropped_share: 0.1
+systems:
+  names: [r0, r1, r2, r3, r3-u]
+  modules: [agent.systems]  # registers r1, r2, r3, r3-u (not on main yet)
+n_boot: 2000
+
+data:
+  source: synthetic
+  n_tickers: 120
+  start: 2015-01-01
+  end: 2026-12-31
+  seed: 0
+  events_seed: 0
+  # Each planted and placebo universe redraws the idiosyncratic noise from its own seed
+  # (universes.replicate), so repeated plants are independent draws.
+  replicates: resample_noise
+
+# Planted grid (evaluation.final_grid): strengths x complexity x feature type. Each
+# (complexity, feature type) cell has ONE base, planted at all four strengths, so the
+# strength comparison is within a base (4 bases x 4 strengths = 16 specs). Variants of a
+# base never share a universe. Directions alternate across strengths, opposite to the
+# dev grid's (universes.planted.GRID_DIRECTIONS) at the strengths both have.
+grid:
+  strengths: [0.005, 0.01, 0.02, 0.04]
+  directions: [1, -1, 1, -1]
+  # Bases (eligible targets on the research-period fake events; all found by the oracle at
+  # 4% on 3/3 independent draws). Each feature type and each complexity has one dividend
+  # and one buyback base, so event type is not confounded with either, and a universe can
+  # hold a dividend and a buyback spec together (same-event-type bases overlap).
+  # Excluded: fake_routine (the event type alone matches it, Jaccard 0.73), new buyback
+  # programs (0.60 alone, 0.58 as small caps: too close to jaccard_min), special
+  # dividends and fake_cautious (under plant_min_events).
+  bases:
+    single:
+      structured:  # 258 targets, 37% small caps
+        name: buyback_existing_program
+        event_type: buyback
+        conditions: [{field: is_new_program, op: "==", value: false}]
+      text:  # 788 targets, 34% small caps; labels by name, must be in the data's label set
+        name: dividend_framing_growth
+        event_type: dividend
+        text_filter: {feature: dividend_framing, equals: fake_growth}
+    conjunction:
+      structured:  # 131 targets, all small caps
+        name: dividend_raise_small
+        event_type: dividend
+        conditions:
+          - {field: dividend_change_pct, op: ">", value: 10.0}
+          - {field: mcap_bucket, op: "==", value: small}
+      text:  # 80 targets, all small caps
+        name: buyback_rationale_excess_cash_small
+        event_type: buyback
+        text_filter: {feature: buyback_rationale, equals: fake_excess_cash}
+        conditions: [{field: mcap_bucket, op: "==", value: small}]
+
+dev_guard:
+  min_seed: 10000
+  dev_configs:
+    - configs/experiment.yaml  # fake-v1: seeds 0-1009, default_spec_grid
+    - configs/experiment_agent_dev.yaml  # PR #18 (agent dev plan); skipped if absent
+
+plan_sha256_file: configs/final.plan.sha256

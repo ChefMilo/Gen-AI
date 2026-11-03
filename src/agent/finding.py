@@ -7,7 +7,8 @@ from pydantic import BaseModel, model_validator
 from dsl.signal import SignalSpec
 from store.schema import EventType
 
-System = Literal["R0", "R1", "R2", "R3", "R3-U"]
+# "stub": findings of evaluation.systems' stub systems (null, random, oracle).
+System = Literal["R0", "R1", "R2", "R3", "R3-U", "stub"]
 Direction = Literal["long", "short"]
 
 

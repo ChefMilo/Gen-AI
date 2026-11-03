@@ -7,6 +7,7 @@ import pytest
 
 from evaluation.plan import plan_experiment
 from evaluation.systems import (
+    STUB_FINDING_SYSTEM,
     SYSTEMS,
     NullSystem,
     OracleSystem,
@@ -118,6 +119,7 @@ def test_random_system_is_seeded(views):
     c = RandomSystem().run(view, budget=6, seed=4)
     assert a == b and a != c
     assert len(a.findings) == 6
+    assert {f.system for f in a.findings} == {STUB_FINDING_SYSTEM} == {"stub"}
     visible = set(view.events["event_id"])
     for f in a.findings:
         assert set(f.event_ids) <= visible and f.n_events == len(f.event_ids)
@@ -128,6 +130,7 @@ def test_oracle_reports_each_truth(universes, views):
     run = OracleSystem().run_with_truths(view, 5, 0, universe.record.truths)
     assert len(run.findings) == len(universe.record.truths)
     assert all(f.passed_correction for f in run.findings)
+    assert all(f.system == "stub" for f in run.findings)  # never mistaken for R0's
     assert OracleSystem().run(view, 5, 0).findings == []  # no truths without the runner
 
 

@@ -171,7 +171,7 @@ def test_detection_curve_data():
     ]
     out = detection_curve_data(tables(rows, truths), seed=0, n_boot=N_BOOT)
     strength = out[out["group"] == "strength"]
-    assert list(strength["value"]) == STRENGTH_ORDER
+    assert list(strength["value"]) == STRENGTH_ORDER[:4]  # no very_strong truths here
     assert list(strength["recall"]) == [0.0, 1.0, 0.0, 1.0]
     assert list(out["group"].unique()) == ["strength", "feature_type", "complexity"]
     # Each group's counts add up to all truths.

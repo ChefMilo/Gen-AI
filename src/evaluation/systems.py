@@ -15,8 +15,8 @@ implement it; until then:
 - OracleSystem (tests only, never registered): the runner hands it the universe's
   truths separately (run_with_truths); it reports each truth's measurable targets.
 
-Finding.system only allows R0-R3 / R3-U (agent/finding.py), so stub findings carry
-STUB_FINDING_SYSTEM; the runner keys results by ResearchSystem.name, not by that field.
+Stub findings carry Finding.system = STUB_FINDING_SYSTEM ("stub"), so they are never
+mistaken for R0's; the runner keys results by ResearchSystem.name, not by that field.
 
 Registry: SYSTEMS maps the names the CLI accepts to factories. Code outside
 src/evaluation adds its systems with register_system(name, factory) at import time, in a
@@ -26,7 +26,8 @@ module listed in the experiment config:
       names: [null, r0, r2]
       modules: [agent.systems]  # imported before the names are looked up
 
-resolve_system_names imports those modules and checks the names. agent.experiment,
+resolve_system_names imports those modules (only when a requested name is not already
+registered) and checks the names. agent.experiment,
 which updates SYSTEMS directly, is still tried for names nothing else registered, with a
 deprecation warning.
 """
@@ -55,7 +56,7 @@ from universes.planted import PlantTruth, eligible
 
 log = logging.getLogger(__name__)
 
-STUB_FINDING_SYSTEM = "R0"
+STUB_FINDING_SYSTEM = "stub"
 VIEW_EVENT_ORDER = ["first_tradeable_date", "ticker", "event_id"]
 METADATA_FIELDS = [
     "backtests_used",
@@ -366,13 +367,15 @@ def _legacy_fallback(names: Iterable[str]) -> None:
 
 
 def resolve_system_names(names: list[str], modules: Iterable[str] = ()) -> None:
-    """Import the configured system modules, then check every name is registered.
+    """Check every name is registered, importing the configured modules first if any
+    name is missing (so built-in names, e.g. --systems r0, work without them).
 
     Names still missing are looked up in agent.experiment (deprecated), with a warning
     for each system it supplies. Raises SystemConfigError naming the failing module, or
     the unknown names and the registered ones.
     """
-    load_system_modules(modules)
+    if any(name not in SYSTEMS for name in names):
+        load_system_modules(modules)
     _legacy_fallback(names)
     unknown = [name for name in names if name not in SYSTEMS]
     if unknown:

@@ -91,7 +91,12 @@ def test_config_with_one_module(system_module, caplog):
 
 def test_missing_module_is_named():
     with pytest.raises(SystemConfigError, match="'no_such_systems_module'"):
-        resolve_system_names(["null"], ["no_such_systems_module"])
+        resolve_system_names(["null", "r2"], ["no_such_systems_module"])
+
+
+def test_modules_are_not_imported_when_every_name_is_built_in():
+    """--systems r0 works on a config whose modules are not installed yet."""
+    resolve_system_names(["r0", "null"], ["no_such_systems_module"])
 
 
 def test_module_that_fails_on_import_is_named(tmp_path, monkeypatch):
@@ -99,7 +104,7 @@ def test_module_that_fails_on_import_is_named(tmp_path, monkeypatch):
                                                 encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
     with pytest.raises(SystemConfigError, match=r"'broken_systems'.*RuntimeError: boom"):
-        resolve_system_names(["null"], ["broken_systems"])
+        resolve_system_names(["dummy"], ["broken_systems"])
     monkeypatch.delitem(sys.modules, "broken_systems", raising=False)
 
 
@@ -117,7 +122,8 @@ def test_cli_reports_config_errors_before_loading_data(tmp_path, monkeypatch, ca
         raise AssertionError("must fail before running")
 
     monkeypatch.setattr(run_module, "run_experiment", no_run)
-    path = write_config(tmp_path, {"names": ["null"], "modules": ["no_such_systems_module"]})
+    path = write_config(tmp_path, {"names": ["null", "r2"],
+                                   "modules": ["no_such_systems_module"]})
     with pytest.raises(SystemExit) as exit_:
         run_module.main(["--config", path])
     assert exit_.value.code == 2

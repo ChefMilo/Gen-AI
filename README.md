@@ -57,3 +57,19 @@ python -m ingest.run collect       # fetch, retry, derive, save events.parquet
 
 `--limit N` runs the first N filings only (saved under `results/extract/`, not to Drive). Replies are cached in `results/extract/`, so reruns are free.
 
+
+## Final experiment plan
+
+`configs/final.yaml` (`final-v1`) defines the frozen final evaluation. Its planted grid is built in code (`src/evaluation/final_grid.py`) from the config. There are 4 strengths × single/conjunction × structured/text, and each (complexity, feature type) cell has one base planted at all four strengths: 4 bases × 4 strengths = 16 specs. Two strengths of the same base never share a universe. Each planted and placebo universe redraws the synthetic prices' idiosyncratic noise from its own seed (`data.replicates: resample_noise`), so a spec's repeated plants are independent draws. Plan construction raises if a seed or spec (compared by canonical signature) is shared with the dev configs. Everything below runs offline, with no LLM calls:
+
+```bash
+python -m evaluation.run --config configs/final.yaml --dry-run --systems r0  # build + check the frozen hash
+python scripts/oracle_check.py      # results/final-v1/oracle.csv: is each planted cell findable?
+python scripts/estimate_cost.py     # sessions x tokens x price per LLM system
+```
+
+`configs/final.plan.sha256` holds the hash of the canonical `plan.json`. The runner warns when a `final-v1` plan differs from it, and `--freeze-plan` re-records it (do that only on purpose).
+
+**The specs are not final yet.** The text bases use the fake event data's labels (`fake_growth`, `fake_excess_cash`), because the final text-feature label set is still being agreed. Once it is, update the grid's text bases to the agreed labels, re-run the oracle check, and re-freeze the plan with `--freeze-plan`. Until then the frozen hash pins the current spec set only.
+
+Scoring reports two rules. The primary rule is each system's own `passed_correction`. The secondary rule (`*_uniform` columns) is a uniform re-correction: Holm over `backtest_budget` at `alpha` from `configs/default.yaml`, recomputed by the evaluator from each finding's `p_value_raw`.
