@@ -23,7 +23,7 @@ from evaluation.metrics import MetricsTables
 
 DEFAULT_N_BOOT = 10_000
 DEFAULT_ALPHA = 0.05
-STRENGTH_ORDER = ["very_weak", "weak", "moderate", "strong"]
+STRENGTH_ORDER = ["very_weak", "weak", "moderate", "strong", "very_strong"]
 SNR_BINS = [(1.0, "<1"), (2.0, "1-2"), (3.0, "2-3"), (4.0, "3-4"), (float("inf"), ">=4")]
 SNR_BIN_ORDER = [label for _, label in SNR_BINS]
 CURVE_GROUPS = ["strength", "feature_type", "complexity", "snr_bin"]
@@ -69,6 +69,12 @@ POOLED_METRICS: dict[str, tuple[str, PooledRatio]] = {
     "effect_error_mean_abs": ("planted", PooledRatio("effect_error_abs_sum", "n_matched")),
     "mean_false_discoveries": ("placebo", PooledRatio("false_discoveries", _ones)),
     "share_with_false_discovery": ("placebo", PooledRatio(_has_false_discovery, _ones)),
+    # Secondary rule (evaluation.metrics, uniform re-correction); NaN when not computed.
+    "recall_uniform": ("planted", PooledRatio("n_matched_uniform", "n_truths")),
+    "precision_uniform": ("planted",
+                          PooledRatio("n_matched_uniform", "n_significant_uniform")),
+    "mean_false_discoveries_uniform": ("placebo",
+                                       PooledRatio("false_discoveries_uniform", _ones)),
 }
 
 
@@ -154,6 +160,17 @@ def _systems(tables: MetricsTables, systems: Sequence[str] | None) -> list[str]:
     return [] if df.empty else list(dict.fromkeys(df["system"]))
 
 
+def _available(df: pd.DataFrame, statistic: PooledRatio) -> bool:
+    """False if a column the statistic reads is missing or all NaN (e.g. the uniform
+    rule was not computed), so it reports NaN instead of a ratio of empty sums."""
+    if df.empty:
+        return True
+    for part in (statistic.numerator, statistic.denominator):
+        if isinstance(part, str) and (part not in df.columns or df[part].isna().all()):
+            return False
+    return True
+
+
 def system_summary(
     tables: MetricsTables,
     systems: Sequence[str] | None = None,
@@ -171,8 +188,12 @@ def system_summary(
             rows_t = _rows(tables, system, universe_type)
             row[f"n_{universe_type}"] = 0 if rows_t.empty else rows_t["universe_id"].nunique()
         for metric, (universe_type, statistic) in POOLED_METRICS.items():
-            ci = bootstrap_ci(_rows(tables, system, universe_type), statistic,
-                              n_boot=n_boot, alpha=alpha, seed=seed)
+            df = _rows(tables, system, universe_type)
+            if not _available(df, statistic):
+                nan = float("nan")
+                row.update({metric: nan, f"{metric}_lo": nan, f"{metric}_hi": nan})
+                continue
+            ci = bootstrap_ci(df, statistic, n_boot=n_boot, alpha=alpha, seed=seed)
             row.update({metric: ci["estimate"], f"{metric}_lo": ci["lo"],
                         f"{metric}_hi": ci["hi"]})
         rows.append(row)

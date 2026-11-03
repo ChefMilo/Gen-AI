@@ -12,7 +12,8 @@ Jaccard = the share kept. Hard rules, per spec in each universe:
 - at least plant_min_events targets left after the drops (plant_universe raises
   otherwise);
 - at most max_dropped_share of its targets dropped (default 0.1).
-Specs with nested target sets (a base spec at another strength, its small-cap
+Specs with the same targets (one base at several strengths) never share a universe, as
+a hard rule. Specs with nested target sets (a base spec at another strength, its small-cap
 conjunction, or e.g. dividend raises that are all framed as growth) break these rules
 together, so they never share a universe. specs_per_universe is therefore a maximum:
 on data where most specs conflict, universes hold fewer.
@@ -24,8 +25,12 @@ Assignment (deterministic per base_seed, ClashIndex counts = find_clashes counts
 2. fill: free slots, always with a spec of the fewest appearances, so appearances
    differ by at most one;
 3. improve: swap specs between universes while the summed cost drops. The cost, in
-   lexicographic order: specs over the hard limits, repeated strengths, a missing
-   feature type, clashing targets.
+   lexicographic order: specs over the hard limits (or sharing a base), repeated
+   strengths, a missing feature type, clashing targets.
+
+With a grid: block (configs/final.yaml) the kept specs are evaluation.final_grid's
+cells instead of default_spec_grid, all of them (a cell short of targets raises), and a
+dev_guard: block makes plan_experiment raise if a seed or spec is shared with dev.
 
 Placebo universes use seeds base_seed + 1000 + i; planted universe i uses base_seed + i
 (its specs carry that seed). There is one "real" universe, with no truths, for later
@@ -45,8 +50,9 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from evaluation.final_grid import DevGuardConfig, GridConfig, check_dev_overlap, grid_specs
 from evaluation.universe_record import UniverseType
 from universes.placebo import DEFAULT_MIN_GAP_DAYS
 from universes.planted import (
@@ -85,6 +91,16 @@ class DataConfig(BaseModel):
     end: date = date(2026, 12, 31)  # synthetic only
     seed: int = 0  # synthetic prices and benchmarks
     events_seed: int = 0  # make_fake_events
+    # shared: every universe is built on the same base prices. resample_noise: each
+    # planted and placebo universe redraws the prices' idiosyncratic noise from its own
+    # seed (universes.replicate), so repeated plants are independent draws.
+    replicates: Literal["shared", "resample_noise"] = "shared"
+
+    @model_validator(mode="after")
+    def _replicates_need_synthetic(self) -> "DataConfig":
+        if self.replicates == "resample_noise" and self.source != "synthetic":
+            raise ValueError("replicates: resample_noise is only for synthetic prices")
+        return self
 
 
 class SystemsConfig(BaseModel):
@@ -128,6 +144,11 @@ class ExperimentConfig(BaseModel):
     # the truth, so a finding on the spec's own definition scores Jaccard = kept share.
     max_dropped_share: float = Field(0.1, ge=0, le=1)
     data: DataConfig = DataConfig()
+    # Final experiments: the planted grid built from config (evaluation.final_grid)
+    # instead of default_spec_grid, the dev overlap guard, and the frozen plan hash.
+    grid: GridConfig | None = None
+    dev_guard: DevGuardConfig | None = None
+    plan_sha256_file: str | None = None  # relative to the repo root
 
     @property
     def system_names(self) -> list[str]:
@@ -236,6 +257,9 @@ class UniverseEntry(BaseModel):
     specs: list[PlantSpec] = []  # planted only, in planting order
     min_events: int | None = None  # planted only: plant_min_events
     min_gap_days: int | None = None  # placebo only
+    # Seed of this universe's independent noise draw (universes.replicate); None: the
+    # base prices as they are.
+    noise_seed: int | None = None
 
     def cache_key(self, fingerprint: DataFingerprint, version: int) -> str:
         """Changes when the entry, the data or the universe format changes."""
@@ -386,6 +410,9 @@ class _Packer:
         dropped = self.index.dropped(keys)
         short = sum(self._over_limit(self.index.n_targets(k), d)
                     for k, d in zip(keys, dropped, strict=True))
+        # Variants of one base (same targets, e.g. another strength) never share a
+        # universe, whatever max_dropped_share allows.
+        short += len(keys) - len(set(keys))
         repeats = len(members) - len({m.strength for m in members})
         missing = min(len(members), self.n_feature_types) - len({m.feature_type
                                                                  for m in members})
@@ -537,8 +564,13 @@ def plan_experiment(
     cfg = cfg.resolved()
     if benchmarks is None:
         benchmarks = pd.DataFrame(columns=["date", "ticker", "ret"])
-    kept, dropped = default_spec_grid(events, cfg.plant_min_events, cfg.holding_days,
-                                      cfg.base_seed)
+    if cfg.grid is not None:
+        kept = grid_specs(cfg.grid, events, cfg.plant_min_events, cfg.holding_days,
+                          cfg.base_seed, cfg.jaccard_min)
+        dropped = []
+    else:
+        kept, dropped = default_spec_grid(events, cfg.plant_min_events, cfg.holding_days,
+                                          cfg.base_seed)
     if cfg.n_planted:
         index = ClashIndex(prices, events, kept)
         assigned = assign_specs(kept, index, cfg.n_planted, cfg.specs_per_universe,
@@ -546,6 +578,7 @@ def plan_experiment(
     else:
         assigned = []
 
+    resample = cfg.data.replicates == "resample_noise"
     n_total = cfg.n_planted + cfg.n_placebo + int(cfg.include_real)
     ids = iter(_universe_ids(cfg.experiment_id, n_total, cfg.base_seed))
     universes, clashes = [], {}
@@ -555,6 +588,7 @@ def plan_experiment(
             universe_id=next(ids), universe_type="planted", seed=seed,
             holding_days=cfg.holding_days, min_events=cfg.plant_min_events,
             specs=[s.model_copy(update={"seed": seed}) for s in specs],
+            noise_seed=seed if resample else None,
         )
         universes.append(entry)
         clashes[entry.universe_id] = sum(index.dropped([_target_key(s) for s in specs]))
@@ -563,10 +597,15 @@ def plan_experiment(
             universe_id=next(ids), universe_type="placebo",
             seed=cfg.base_seed + PLACEBO_SEED_OFFSET + i, holding_days=cfg.holding_days,
             min_gap_days=cfg.min_gap_days,
+            noise_seed=cfg.base_seed + PLACEBO_SEED_OFFSET + i if resample else None,
         ))
     if cfg.include_real:
         universes.append(UniverseEntry(universe_id=next(ids), universe_type="real",
                                        holding_days=cfg.holding_days))
+
+    if cfg.dev_guard is not None:  # a hard check on every plan, not just in tests
+        seeds = {cfg.base_seed} | {u.seed for u in universes if u.seed is not None}
+        check_dev_overlap(seeds, kept, cfg.dev_guard, events)
 
     appearances = {s.spec_id: 0 for s in kept}
     for specs in assigned:
@@ -578,6 +617,22 @@ def plan_experiment(
         dropped_specs=dropped, appearances=appearances, planned_clashes=clashes,
         universes=universes,
     )
+
+
+def plan_sha256(plan: ExperimentPlan) -> str:
+    """SHA-256 of the canonical plan JSON (sorted keys, no whitespace)."""
+    text = json.dumps(plan.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def frozen_plan_sha256(cfg: ExperimentConfig) -> str | None:
+    """The hash recorded in cfg.plan_sha256_file, or None if there is none yet."""
+    if cfg.plan_sha256_file is None:
+        return None
+    path = REPO_ROOT / cfg.plan_sha256_file
+    if not path.exists():
+        return None
+    return path.read_text(encoding="utf-8").split()[0]
 
 
 def save_plan(plan: ExperimentPlan, path: Path) -> None:

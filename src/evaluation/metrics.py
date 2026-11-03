@@ -19,21 +19,65 @@ Definitions, per (system, universe):
   effect_car - direction * effect, alongside.
   effect_error_sum and effect_error_abs_sum (0 with no matches) let statistics pool
   the error over all matches rather than average per-universe means.
+
+Two scoring rules (both reported when evaluate() gets a UniformCorrection):
+- primary: each finding's own passed_correction, i.e. the system's own family
+  (R0: its 3 hypotheses; the harness: its budget; R3-U: none);
+- secondary (*_uniform columns): one rule for every system. The evaluator recomputes
+  Holm (harness.corrections.holm_adjust) over the session's findings' p_value_raw, in a
+  family of max(backtest_budget, n findings) with the unreported slots at p = 1, and
+  passed = p_corrected <= alpha (configs/default.yaml). The evaluator only sees reported
+  findings, so a session that ran (and hid) more significant tests is judged as if it
+  had not: the uniform rule is a lower bound on the true multiplicity, never stricter.
 """
 
+import math
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any, NamedTuple
 
 import numpy as np
 import pandas as pd
+import yaml
 from pydantic import BaseModel
 
 from agent.finding import Finding
 from evaluation.matching import Match, MatchResult, match_findings, sign
 from evaluation.universe_record import UniverseRecord
+from harness.corrections import holm_adjust
+
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "default.yaml"
 
 GROUPS = ["overall", "strength", "complexity", "feature_type", "event_type", "direction"]
 EFFICIENCY_FIELDS = ["backtests_used", "tool_calls", "tokens", "cost_usd"]
+
+
+class UniformCorrection(BaseModel):
+    """The secondary scoring rule: Holm over a budget-sized family at alpha."""
+
+    budget: int
+    alpha: float
+
+
+def uniform_correction(budget: int | None = None,
+                       path: Path = DEFAULT_CONFIG_PATH) -> UniformCorrection:
+    """backtest_budget (unless given) and alpha from configs/default.yaml."""
+    with open(path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    return UniformCorrection(budget=int(cfg["backtest_budget"] if budget is None else budget),
+                             alpha=float(cfg["alpha"]))
+
+
+def recorrect(findings: list[Finding], rule: UniformCorrection) -> list[Finding]:
+    """Copies of findings with p_value_corrected and passed_correction from the uniform
+    rule (module docstring). A non-finite p_value_raw counts as 1."""
+    if not findings:
+        return []
+    p_raw = [f.p_value_raw if math.isfinite(f.p_value_raw) else 1.0 for f in findings]
+    p_raw = [min(max(p, 0.0), 1.0) for p in p_raw]
+    adjusted = holm_adjust(p_raw, family_size=max(rule.budget, len(findings)))
+    return [f.model_copy(update={"p_value_corrected": a, "passed_correction": a <= rule.alpha})
+            for f, a in zip(findings, adjusted, strict=True)]
 
 
 class UniverseResult(BaseModel):
@@ -42,7 +86,8 @@ class UniverseResult(BaseModel):
     system: str
     record: UniverseRecord
     findings: list[Finding]
-    match: MatchResult
+    match: MatchResult  # primary: the system's own passed_correction
+    match_uniform: MatchResult | None = None  # secondary: the uniform re-correction
     metadata: dict[str, Any] = {}  # session metadata, e.g. tool_calls, tokens, cost_usd
 
 
@@ -52,12 +97,16 @@ def evaluate(
     findings: list[Finding],
     jaccard_min: float | None = None,
     metadata: Mapping[str, Any] | None = None,
+    uniform: UniformCorrection | None = None,
 ) -> UniverseResult:
+    """Score findings; with uniform, also under the uniform re-correction."""
     return UniverseResult(
         system=system,
         record=record,
         findings=findings,
         match=match_findings(findings, record, jaccard_min),
+        match_uniform=(None if uniform is None
+                       else match_findings(recorrect(findings, uniform), record, jaccard_min)),
         metadata=dict(metadata or {}),
     )
 
@@ -132,8 +181,29 @@ def universe_row(result: UniverseResult) -> dict[str, Any]:
     }
     if planted:
         row.update(precision(match))
+    row.update(uniform_columns(result))
     row.update(efficiency(result.findings, result.metadata))
     return row
+
+
+UNIFORM_COLUMNS = ["n_significant_uniform", "n_matched_uniform", "recall_uniform",
+                   "precision_uniform", "false_discoveries_uniform"]
+
+
+def uniform_columns(result: UniverseResult) -> dict[str, float]:
+    """The secondary rule's counts and rates; NaN when it was not computed."""
+    out = dict.fromkeys(UNIFORM_COLUMNS, float("nan"))
+    match = result.match_uniform
+    if match is None:
+        return out
+    out["n_significant_uniform"] = match.n_significant
+    out["n_matched_uniform"] = len(match.matches)
+    if match.universe_type == "planted":
+        out["recall_uniform"] = _ratio(len(match.matches), match.n_truths)
+        out["precision_uniform"] = _ratio(len(match.matches), match.n_significant)
+    if match.universe_type == "placebo":
+        out["false_discoveries_uniform"] = len(match.with_status("false_discovery"))
+    return out
 
 
 def _truth_labels(truth) -> dict[str, str]:
@@ -148,7 +218,14 @@ def _truth_labels(truth) -> dict[str, str]:
     }
 
 
-TRUTH_COLUMNS = ["system", "universe_id", "spec_id", *GROUPS[1:], "snr", "matched"]
+TRUTH_COLUMNS = ["system", "universe_id", "spec_id", *GROUPS[1:], "snr", "matched",
+                 "matched_uniform"]
+
+
+def _matched_uniform(result: UniverseResult) -> set[str] | None:
+    if result.match_uniform is None:
+        return None
+    return {m.spec_id for m in result.match_uniform.matches}
 
 
 def truth_rows(results: Iterable[UniverseResult]) -> pd.DataFrame:
@@ -159,6 +236,7 @@ def truth_rows(results: Iterable[UniverseResult]) -> pd.DataFrame:
         if result.match.universe_type != "planted":
             continue
         matched = {m.spec_id for m in result.match.matches}
+        uniform = _matched_uniform(result)
         for truth in result.record.truths:
             labels = _truth_labels(truth)
             rows.append({
@@ -166,6 +244,8 @@ def truth_rows(results: Iterable[UniverseResult]) -> pd.DataFrame:
                 "spec_id": truth.spec.spec_id, **{g: labels[g] for g in GROUPS[1:]},
                 "snr": float("nan") if truth.snr is None else truth.snr,
                 "matched": truth.spec.spec_id in matched,
+                "matched_uniform": (None if uniform is None
+                                    else truth.spec.spec_id in uniform),
             })
     return pd.DataFrame(rows, columns=TRUTH_COLUMNS)
 
@@ -177,24 +257,35 @@ def recall_breakdowns(results: Iterable[UniverseResult]) -> pd.DataFrame:
         if result.match.universe_type != "planted":
             continue
         matched = {m.spec_id for m in result.match.matches}
+        uniform = _matched_uniform(result)
         for truth in result.record.truths:
             labels = _truth_labels(truth)
             for group in GROUPS:
                 rows.append({
                     "system": result.system, "group": group, "value": labels[group],
                     "matched": truth.spec.spec_id in matched,
+                    "matched_uniform": (float("nan") if uniform is None
+                                        else float(truth.spec.spec_id in uniform)),
                 })
-    columns = ["system", "group", "value", "n_truths", "n_matched", "recall"]
+    columns = ["system", "group", "value", "n_truths", "n_matched", "recall",
+               "n_matched_uniform", "recall_uniform"]
     if not rows:
         return pd.DataFrame(columns=columns)
     df = pd.DataFrame(rows)
+    keys = ["system", "group", "value"]
     out = (
-        df.groupby(["system", "group", "value"], sort=False)["matched"]
+        df.groupby(keys, sort=False)["matched"]
         .agg(n_truths="size", n_matched="sum")
         .reset_index()
     )
     out["n_matched"] = out["n_matched"].astype(int)
     out["recall"] = out["n_matched"] / out["n_truths"]
+    # NaN when any result in the group lacks the uniform rule.
+    uniform = (df.groupby(keys, sort=False)["matched_uniform"]
+               .agg(lambda v: v.sum() if v.notna().all() else float("nan"))
+               .rename("n_matched_uniform").reset_index())
+    out = out.merge(uniform, on=keys, how="left")
+    out["recall_uniform"] = out["n_matched_uniform"] / out["n_truths"]
     return out[columns]
 
 
