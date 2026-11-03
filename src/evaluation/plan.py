@@ -23,8 +23,14 @@ Assignment (deterministic per base_seed, ClashIndex counts = find_clashes counts
    universe it fits, then the one where it adds least cost; raises if a spec fits
    nowhere (then n_planted is too small for the data);
 2. fill: free slots, always with a spec of the fewest appearances, so appearances
-   differ by at most one;
-3. improve: swap specs between universes while the summed cost drops. The cost, in
+   differ by at most one. Greedy, so it can stall with a spec short of appearances it
+   could have had;
+3. balance: an exact search (depth-first, seeded order, at most _SEARCH_NODES steps per
+   target) for an assignment giving every spec t appearances, for t = 1 + the fewest
+   fill reached, upwards while one is found. The highest t found replaces the fill
+   result (every spec exactly t, at least fill's most); if none is found, fill's result
+   stays and the specs with fewer appearances are logged;
+4. improve: swap specs between universes while the summed cost drops. The cost, in
    lexicographic order: specs over the hard limits (or sharing a base), repeated
    strengths, a missing feature type, clashing targets.
 
@@ -43,6 +49,7 @@ must not learn the universe type from it. plan.json maps ids to types.
 
 import hashlib
 import json
+import logging
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -67,6 +74,8 @@ from universes.planted import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = REPO_ROOT / "configs" / "default.yaml"
 EXPERIMENT_CONFIG_PATH = REPO_ROOT / "configs" / "experiment.yaml"
+
+log = logging.getLogger(__name__)
 
 PLACEBO_SEED_OFFSET = 1000
 _PLAN_STREAM = 7
@@ -375,6 +384,7 @@ class ClashIndex:
 # --- Assignment -----------------------------------------------------------------
 
 _COVERAGE_ATTEMPTS = 20
+_SEARCH_NODES = 200_000  # per target in _Packer.balanced; a count, so deterministic
 _ZERO_COST = (0, 0, 0, 0)
 
 
@@ -396,6 +406,7 @@ class _Packer:
                         if b.spec_id != a.spec_id and self.cost([a, b])[0]}
             for a in specs
         }
+        self._clean: dict[frozenset, bool] = {}  # target keys -> no spec over a limit
 
     def _ranks(self) -> dict[str, int]:
         order = self.rng.permutation(len(self.specs))
@@ -480,6 +491,89 @@ class _Packer:
             universes[u].append(s)
             counts[s.spec_id] += 1
 
+    def _no_clash(self, members) -> bool:
+        """cost(members)[0] == 0, cached on the target keys (members never repeat one)."""
+        keys = frozenset(self.key_of[m.spec_id] for m in members)
+        if keys not in self._clean:
+            self._clean[keys] = self.cost(members)[0] == 0
+        return self._clean[keys]
+
+    def _search(self, t: int) -> list[list[PlantSpec]] | None:
+        """Every spec in exactly t distinct universes under the hard rules (fits), and no
+        universe empty, or None if there is none or the search runs out of _SEARCH_NODES
+        steps.
+
+        Specs go most-conflicted first (ties by the seeded rank), each copy into a
+        universe after its previous copy's. Empty universes are interchangeable, so only
+        the first empty one after that is tried.
+        """
+        order = sorted(self.specs,
+                       key=lambda s: (-len(self.conflicts[s.spec_id]), self.rank[s.spec_id]))
+        copies = [(s, k) for s in order for k in range(t)]
+        if len(copies) > self.n * self.per_universe or t > self.n:
+            return None
+        universes: list[list[PlantSpec]] = [[] for _ in range(self.n)]
+        nodes = 0
+
+        def options(spec, after: int) -> list[int]:
+            out, empty_tried = [], False
+            for u in range(after + 1, self.n):
+                members = universes[u]
+                if not members:
+                    if empty_tried:
+                        continue
+                    empty_tried = True
+                    out.append(u)
+                elif (len(members) < self.per_universe
+                      and not self.conflicts[spec.spec_id] & {m.spec_id for m in members}
+                      and self._no_clash(members + [spec])):
+                    out.append(u)
+            # Emptiest, then cheapest to add to, as _place does.
+            return sorted(out, key=lambda u: (len(universes[u]),
+                                              *self._added(spec, universes[u]), u))
+
+        def place(i: int, after: int) -> bool:
+            nonlocal nodes
+            if i == len(copies):
+                return True
+            nodes += 1
+            if nodes > _SEARCH_NODES:
+                return False
+            spec, k = copies[i]
+            after = after if k else -1
+            left = len(copies) - i
+            free = sum(self.per_universe - len(m) for m in universes)
+            if free < left or sum(not m for m in universes) > left:
+                return False  # no room, or a universe would stay empty
+            for u in options(spec, after):
+                universes[u].append(spec)
+                if place(i + 1, u):
+                    return True
+                universes[u].pop()
+            return False
+
+        return universes if place(0, -1) else None
+
+    def balanced(self, universes) -> list[list[PlantSpec]]:
+        """The balance step (module docstring): the most even assignment found."""
+        counts = dict.fromkeys(self.rank, 0)
+        for members in universes:
+            for m in members:
+                counts[m.spec_id] += 1
+        best = None
+        t = min(counts.values()) + 1
+        while (found := self._search(t)) is not None:
+            best, t = found, t + 1
+        if best is not None:
+            return best
+        fewest, most = min(counts.values()), max(counts.values())
+        if fewest < most:
+            short = sorted(s for s, c in counts.items() if c == fewest)
+            log.warning("planted appearances uneven (%d to %d); no assignment with %d for "
+                        "every spec found. %d specs with %d: %s", fewest, most, fewest + 1,
+                        len(short), fewest, ", ".join(short))
+        return universes
+
     def improve(self, universes) -> None:
         """Swap specs between universes while a swap lowers the summed cost.
 
@@ -542,6 +636,7 @@ def assign_specs(
             f"at least one other spec)"
         )
     packer.fill(universes)
+    universes = packer.balanced(universes)
     packer.improve(universes)
     if any(packer.cost(m)[0] for m in universes):  # improve() only lowers the cost
         raise AssertionError("a planted universe has a spec over the clash limits")

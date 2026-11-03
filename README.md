@@ -71,7 +71,7 @@ The current bases:
 | conjunction | structured | `dividend_raise_small`: dividend raises > 10%, small caps | 131 |
 | conjunction | text | `buyback_rationale_undervalued_small`: buybacks framed as `fake_undervalued`, small caps | 77 |
 
-Event type is not balanced: both structured bases are dividends, because no one-feature structured buyback base keeps clear of PR #18's dev specs. `dividend_framing_growth` overlaps the other dividend bases, so its four specs get 1 planted appearance each and the other 12 get 2.
+Event type is not balanced: both structured bases are dividends, because no one-feature structured buyback base keeps clear of PR #18's dev specs. `dividend_framing_growth` overlaps the other dividend bases, so it only shares a universe with the buyback base. The planner searches for an assignment that gives every spec the same number of appearances, so each of the 16 specs appears in 2 planted universes. When no such assignment exists, it keeps the greedy one and logs the specs that got fewer.
 
 Everything below runs offline, with no LLM calls:
 

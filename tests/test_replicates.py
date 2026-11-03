@@ -102,7 +102,10 @@ def test_repeated_plants_are_independent_draws(tmp_path, grid, data):
     and (near-)identical ones on shared base prices."""
     independent = _t_spread(tmp_path, grid, data, "resample_noise")
     shared = _t_spread(tmp_path, grid, data, "shared")
-    assert (independent > 0.3).all(), independent
+    # Per spec, two independent draws of t differ by |N(0, 2)|, which can be small by
+    # chance; the shared draws must not differ at all.
+    assert (shared < 0.01).all(), shared
+    assert (independent > 0.05).all(), independent
     assert independent.mean() > 5 * max(shared.mean(), 0.05), (independent, shared)
 
 

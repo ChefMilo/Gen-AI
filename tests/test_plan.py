@@ -1,5 +1,7 @@
 """plan_experiment: coverage, clash limits, determinism, seeds and the data fingerprint."""
 
+import logging
+
 import numpy as np
 import pytest
 
@@ -9,6 +11,7 @@ from evaluation.plan import (
     ExperimentConfig,
     _Packer,
     _target_key,
+    assign_specs,
     data_fingerprint,
     load_experiment_config,
     load_plan,
@@ -17,6 +20,7 @@ from evaluation.plan import (
 )
 from evaluation.universe_record import find_clashes
 from experiment_helpers import MIN_EVENTS, config, small_data
+from universes.planted import PlantSpec
 
 
 @pytest.fixture(scope="module")
@@ -175,3 +179,76 @@ def test_experiment_config_defaults():
     assert resolved.plant_min_events == 50 and resolved.min_gap_days == 10
     assert resolved.backtest_budget == 30 and resolved.jaccard_min == 0.6
     assert resolved.research_start is not None
+
+
+# --- Balanced appearances ----------------------------------------------------------
+
+
+class StubIndex:
+    """A ClashIndex stand-in: 100 targets per base, all dropped when the universe holds
+    a base it clashes with."""
+
+    def __init__(self, specs, clashes: set[frozenset]):
+        self.keys = [(s.spec_id.split("_")[0],) for s in specs]
+        self.clashes = clashes
+
+    def n_targets(self, key) -> int:
+        return 100
+
+    def dropped(self, keys) -> list[int]:
+        return [100 if any(frozenset({a[0], b[0]}) in self.clashes
+                           for j, b in enumerate(keys) if j != i) else 0
+                for i, a in enumerate(keys)]
+
+
+STRENGTHS = ("weak", "moderate", "strong", "very_strong")
+
+
+def variants(base: str, feature_type: str = "structured") -> list[PlantSpec]:
+    return [PlantSpec(spec_id=f"{base}_{k}", event_type="dividend", effect=0.01,
+                      strength=strength, complexity="single", feature_type=feature_type)
+            for k, strength in enumerate(STRENGTHS)]
+
+
+def appearances(universes) -> dict[str, int]:
+    out = {}
+    for members in universes:
+        for m in members:
+            out[m.spec_id] = out.get(m.spec_id, 0) + 1
+    return out
+
+
+def test_balanced_appearances_when_an_assignment_exists():
+    """The final grid's shape: base a clashes with b and c, d fits with all. Cover + fill
+    leaves a short (each a-variant once); {a, d} x 8 + {b, c} x 8 gives 2 each."""
+    specs = (variants("a", "text") + variants("b") + variants("c")
+             + variants("d", "text"))
+    index = StubIndex(specs, {frozenset("ab"), frozenset("ac")})
+    greedy = _Packer(specs, index, 16, 4, 50, 0.1, 0)
+    universes = greedy.cover()
+    greedy.fill(universes)
+    assert min(appearances(universes).values()) == 1  # the case the search is for
+
+    for seed in (0, 1, 2):
+        assigned = assign_specs(specs, index, 16, 4, 50, seed, max_dropped_share=0.1)
+        assert set(appearances(assigned).values()) == {2}
+        assert all(assigned)  # no planted universe left empty
+        for members in assigned:
+            bases = {m.spec_id[0] for m in members}
+            assert len(bases) == len(members) and not ({"a", "b"} <= bases
+                                                       or {"a", "c"} <= bases)
+        again = assign_specs(specs, index, 16, 4, 50, seed, max_dropped_share=0.1)
+        assert again == assigned  # deterministic per seed
+
+
+def test_uneven_appearances_fall_back_and_are_logged(caplog):
+    """Three universes, each holding at most one variant of x: x cannot get a second
+    appearance, so the fill result stays and its short specs are logged."""
+    specs = variants("x")[:3] + variants("y")[:1]
+    index = StubIndex(specs, set())
+    with caplog.at_level(logging.WARNING, logger="evaluation.plan"):
+        assigned = assign_specs(specs, index, 3, 2, 50, 0, max_dropped_share=0.1)
+    counts = appearances(assigned)
+    assert counts == {"x_0": 1, "x_1": 1, "x_2": 1, "y_0": 2}
+    assert "planted appearances uneven (1 to 2)" in caplog.text
+    assert "3 specs with 1: x_0, x_1, x_2" in caplog.text

@@ -6,9 +6,8 @@
 experiment_id: final-v1
 # 16 specs (4 bases x 4 strengths). Variants of a base never share a universe, and
 # dividend_framing_growth overlaps both other dividend bases, so it only shares a
-# universe with the buyback base. With 16 universes the planner gives the growth specs
-# 1 appearance each and the other 12 specs 2 (n_planted: 24 gives 2 and 3). See
-# evaluation.plan.
+# universe with the buyback base: 8 x {growth, buyback} + 8 x {large, raise_small}
+# gives every spec 2 independent appearances (evaluation.plan's balance step).
 n_planted: 16
 n_placebo: 10
 specs_per_universe: 4
