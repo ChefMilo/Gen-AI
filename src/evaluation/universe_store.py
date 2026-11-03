@@ -9,6 +9,8 @@ Each universe directory holds:
   per spec in planting order and per ticker from that spec's first window row, on the
   final ret. That gives the same floats, because every row's final adj_close comes
   from the last rebuild covering it, over rows no later spec changes;
+- nothing for an entry's noise_seed: its prices start from
+  universes.replicate.resample_idiosyncratic(base prices, seed), redrawn on load;
 - events_delta.parquet (placebo only): the moved events' changed columns
   (PLACEBO_CHANGED), by event_id. Dropped events are listed in the record;
 - meta.json, written last: the cache key (plan entry + data fingerprint + FORMAT_VERSION),
@@ -41,6 +43,7 @@ from evaluation.universe_record import (
 )
 from universes.placebo import DATE_FIELDS, make_placebo
 from universes.planted import window_positions
+from universes.replicate import resample_idiosyncratic
 
 log = logging.getLogger(__name__)
 
@@ -121,16 +124,26 @@ def universe_dir(root: Path, universe_id: str) -> Path:
     return Path(root) / UNIVERSES_DIR / universe_id
 
 
-def build_universe(entry: UniverseEntry, data: BaseData) -> Universe:
+def entry_prices(entry: UniverseEntry, data: BaseData) -> pd.DataFrame:
+    """The prices entry starts from: the base prices, or (with a noise_seed) their
+    independent redraw (universes.replicate). Deterministic, so never stored."""
+    if entry.noise_seed is None:
+        return data.prices
+    return resample_idiosyncratic(data.prices, data.benchmarks, entry.noise_seed)
+
+
+def build_universe(entry: UniverseEntry, data: BaseData,
+                   base_prices: pd.DataFrame | None = None) -> Universe:
     """The universe for entry, built from the base data (nothing is read or written)."""
-    prices, events = data.prices, data.events
+    base = entry_prices(entry, data) if base_prices is None else base_prices
+    prices, events = base, data.events
     if entry.universe_type == "planted":
         prices, record = plant_universe(
-            entry.universe_id, data.prices, data.events, entry.specs, entry.min_events,
+            entry.universe_id, base, data.events, entry.specs, entry.min_events,
             seed=entry.seed, benchmarks=data.benchmarks,
         )
     elif entry.universe_type == "placebo":
-        events, info = make_placebo(data.prices, data.events, entry.seed, entry.min_gap_days,
+        events, info = make_placebo(base, data.events, entry.seed, entry.min_gap_days,
                                     entry.holding_days)
         record = placebo_record(entry.universe_id, info)
     else:
@@ -267,10 +280,11 @@ def ensure_universe(
     (path / META).unlink(missing_ok=True)  # first, so a half-written cache is never reused
     for name in CACHE_FILES:
         (path / name).unlink(missing_ok=True)
-    universe = build_universe(entry, data)
+    base = entry_prices(entry, data)
+    universe = build_universe(entry, data, base)
     _write_text(universe.record.model_dump_json(), path / RECORD)
     if entry.universe_type == "planted":
-        _write_parquet(prices_delta(data.prices, universe.prices), path / PRICES_DELTA)
+        _write_parquet(prices_delta(base, universe.prices), path / PRICES_DELTA)
     elif entry.universe_type == "placebo":
         _write_parquet(events_delta(universe.events, universe.record), path / EVENTS_DELTA)
     seconds = time.perf_counter() - start
@@ -303,9 +317,9 @@ def load_universe(
         raise StaleCacheError(f"{entry.universe_id}: no cache for this plan entry and data")
     meta = read_meta(path)
     record = UniverseRecord.model_validate_json((path / RECORD).read_text(encoding="utf-8"))
-    prices, events = data.prices, data.events
+    prices, events = entry_prices(entry, data), data.events
     if entry.universe_type == "planted":
-        prices = apply_prices_delta(data.prices, data.events, record,
+        prices = apply_prices_delta(prices, data.events, record,
                                     pd.read_parquet(path / PRICES_DELTA))
     elif entry.universe_type == "placebo":
         events = apply_events_delta(data.events, record, pd.read_parquet(path / EVENTS_DELTA))

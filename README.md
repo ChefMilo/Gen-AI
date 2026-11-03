@@ -57,3 +57,32 @@ python -m ingest.run collect       # fetch, retry, derive, save events.parquet
 
 `--limit N` runs the first N filings only (saved under `results/extract/`, not to Drive). Replies are cached in `results/extract/`, so reruns are free.
 
+
+## Final experiment plan
+
+`configs/final.yaml` (`final-v1`) defines the frozen final evaluation. Its planted grid is built in code (`src/evaluation/final_grid.py`) from the config. There are 4 strengths × single/conjunction × structured/text, and each (complexity, feature type) cell has one base planted at all four strengths: 4 bases × 4 strengths = 16 specs. Two strengths of the same base never share a universe. Each planted and placebo universe redraws the synthetic prices' idiosyncratic noise from its own seed (`data.replicates: resample_noise`), so a spec's repeated plants are independent draws. Plan construction raises if a seed or spec (compared by canonical signature) is shared with the dev configs, or if a final base shares more than `dev_guard.max_containment` (5%) of its targets with an agent dev spec, or reaches `jaccard_min` with one (PR #18's `configs/experiment_agent_dev.yaml`; skipped with a warning when that file is absent).
+
+The current bases:
+
+| Complexity | Feature type | Base | Targets |
+|---|---|---|---|
+| single | structured | `dividend_large`: dividends of large caps | 1041 |
+| single | text | `dividend_framing_growth`: dividends framed as `fake_growth` | 788 |
+| conjunction | structured | `dividend_raise_small`: dividend raises > 10%, small caps | 131 |
+| conjunction | text | `buyback_rationale_undervalued_small`: buybacks framed as `fake_undervalued`, small caps | 77 |
+
+Event type is not balanced: both structured bases are dividends, because no one-feature structured buyback base keeps clear of PR #18's dev specs. `dividend_framing_growth` overlaps the other dividend bases, so it only shares a universe with the buyback base. The planner searches for an assignment that gives every spec the same number of appearances, so each of the 16 specs appears in 2 planted universes. When no such assignment exists, it keeps the greedy one and logs the specs that got fewer.
+
+Everything below runs offline, with no LLM calls:
+
+```bash
+python -m evaluation.run --config configs/final.yaml --dry-run --systems r0  # build + check the frozen hash
+python scripts/oracle_check.py      # results/final-v1/oracle.csv: is each planted cell findable?
+python scripts/estimate_cost.py     # sessions x tokens x price per LLM system
+```
+
+`configs/final.plan.sha256` holds the hash of the canonical `plan.json`. The runner warns when a `final-v1` plan differs from it, and `--freeze-plan` re-records it (do that only on purpose).
+
+**The specs are not final yet.** The text bases use the fake event data's labels (`fake_growth`, `fake_undervalued`), because the final text-feature label set is still being agreed. Once it is, update the grid's text bases to the agreed labels, re-run the oracle check, and re-freeze the plan with `--freeze-plan`. Until then the frozen hash pins the current spec set only.
+
+Scoring reports two rules. The primary rule is each system's own `passed_correction`. The secondary rule (`*_uniform` columns) is a uniform re-correction: Holm over `backtest_budget` at `alpha` from `configs/default.yaml`, recomputed by the evaluator from each finding's `p_value_raw`.

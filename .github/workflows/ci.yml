@@ -12,5 +12,18 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
+      - name: Environment
+        run: |
+          python --version
+          pip freeze
+          python -c "import numpy; numpy.show_config()" | sed -n '/SIMD Extensions/,$p'
+      - name: Plan hash by part (compare across machines)
+        run: python scripts/plan_hash_parts.py --out results/ci/plan-hash-parts.json
       - run: ruff check .
       - run: pytest -q
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-plan-json
+          path: results/ci/
+          if-no-files-found: ignore

@@ -103,3 +103,28 @@ def test_a_few_bad_price_days(prices):
     assert 0 < bad.mean() < 0.01
     assert set(prices.loc[bad, "bad_price_reason"]) <= set(BAD_PRICE_REASONS)
     assert prices.loc[~bad, "bad_price_reason"].isna().all()
+
+
+@pytest.mark.parametrize("towards", [np.inf, -np.inf])
+def test_frames_do_not_depend_on_the_last_bit_of_exp_and_log(monkeypatch, towards):
+    """np.exp and np.log can differ by one ulp between CPUs (AVX-512 dispatch). Moving
+    every result one ulp must not change the frames or the fake events built on them,
+    or the data fingerprint (and the frozen plan hash) would depend on the machine."""
+    from evaluation.plan import data_fingerprint
+    from universes.fake_events import make_fake_events
+
+    def build():
+        prices = make_synthetic_prices(TICKERS, START, END, seed=0)
+        benchmarks = make_synthetic_benchmarks(START, END, seed=0)
+        return prices, benchmarks, make_fake_events(prices, seed=0)
+
+    exact = build()
+    for name in ("exp", "log"):
+        ufunc = getattr(np, name)
+        monkeypatch.setattr(np, name, lambda x, *a, _f=ufunc, **k: np.nextafter(_f(x, *a, **k),
+                                                                              towards))
+    assert np.exp(1.0) != 2.718281828459045 or np.log(np.e) != 1.0  # the patch is live
+    shifted = build()
+    for a, b in zip(exact, shifted, strict=True):
+        pd.testing.assert_frame_equal(a, b)
+    assert data_fingerprint(*shifted) == data_fingerprint(*exact)

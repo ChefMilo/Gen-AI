@@ -2,7 +2,13 @@
 
 For tests and for building against fake events before the real data is wired in.
 All randomness comes from numpy Generators seeded from `seed`, so the same
-arguments always give the same frames.
+arguments always give the same frames, on any machine: the frames use only exactly
+rounded arithmetic (+, -, *, /) on the draws, plus np.exp in one place whose result is
+rounded to whole shares. Transcendental ufuncs (np.exp, np.log, ...) are not exactly
+rounded and their float64 results can differ in the last bit between CPUs (numpy
+dispatches them to AVX-512 code on machines that have it), which would change the data
+fingerprint and so the frozen plan hash (evaluation.plan.plan_sha256). Keep new code
+to that rule, or round the result to a precision those differences cannot reach.
 """
 
 from datetime import date
@@ -20,6 +26,12 @@ from pandas.tseries.holiday import (
     USThanksgivingDay,
     nearest_workday,
 )
+
+# ln of the constants below, as literals: np.log's last bit depends on the CPU.
+_LN_5E6 = 15.424948470398375  # min base shares outstanding
+_LN_2E8 = 19.11382792451231  # max base shares outstanding
+_LN_3E5 = 12.611537753638338  # median daily volume, stocks
+_LN_5E7 = 17.72753356339242  # median daily volume, benchmarks
 
 PRICE_COLUMNS = [
     "date",
@@ -123,7 +135,8 @@ def make_synthetic_prices(
         split_factor = np.ones(n)
         if rng.random() < 0.1 and n > 2:
             split_factor[: int(rng.integers(1, n))] = rng.choice([2.0, 1.5])
-        base_shares = np.exp(rng.uniform(np.log(5e6), np.log(2e8)))
+        # Whole shares: np.exp's last bit depends on the CPU, a whole number does not.
+        base_shares = float(np.round(np.exp(rng.uniform(_LN_5E6, _LN_2E8))))
         shares = base_shares / split_factor
         raw_close = close * split_factor
 
@@ -148,7 +161,7 @@ def make_synthetic_prices(
                     "close": close,
                     "adj_close": adj_close,
                     "ret": _ret_from_adj_close(adj_close),
-                    "volume": rng.lognormal(np.log(3e5), 0.5, n).astype("int64"),
+                    "volume": rng.lognormal(_LN_3E5, 0.5, n).astype("int64"),
                     "raw_close": raw_close,
                     "split_factor": split_factor,
                     "shares_outstanding": shares,
@@ -195,7 +208,7 @@ def make_synthetic_benchmarks(start: date | str, end: date | str, seed: int) -> 
                     "low": low,
                     "close": close,
                     "adj_close": adj_close,
-                    "volume": rng.lognormal(np.log(5e7), 0.4, n).astype("int64"),
+                    "volume": rng.lognormal(_LN_5E7, 0.4, n).astype("int64"),
                     "ret": _ret_from_adj_close(adj_close),
                 }
             )
