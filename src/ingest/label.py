@@ -350,7 +350,8 @@ def label(
     show(sentences, ids, out)
     out("")
     out("Rules: common stock only; past repurchase activity is not an event; a special paid")
-    out("with the regular dividend is two events; amounts for an increase = the added amount.")
+    out("with the regular dividend is two events; a dividend increase = the NEW per-share amount;")
+    out("a buyback increase = the ADDED dollar amount (total in notes).")
     out("Count each decision once, even if the 8-K and its press release both state it.")
 
     if not by:
