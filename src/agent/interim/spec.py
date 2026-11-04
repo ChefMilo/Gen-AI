@@ -11,6 +11,7 @@ feature name -> (event type, allowed labels).
 
 from typing import Any, Literal, NamedTuple
 
+import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
@@ -116,18 +117,24 @@ def select(events: pd.DataFrame, spec: Any) -> pd.DataFrame:
     """Events of spec.event_type matching every condition and the text filter, if any.
 
     Text filters read the flattened <feature> label column (agent.interim.data).
-    A missing value (NaN) never matches, as in R0 (NaN > 10 is False).
+    A missing value never satisfies any condition, "!=" included, and neither does a
+    non-finite number: the rule of Member 4's backtest.selection.select_events (R0 never
+    meets the difference, since NaN > 10 is False there too).
     """
     mask = events["event_type"] == spec.event_type
     for c in spec.conditions:
         col = events[c.field]
+        valid = col.notna()
+        if pd.api.types.is_numeric_dtype(col) and not pd.api.types.is_bool_dtype(col):
+            valid &= np.isfinite(col.astype(float))
         if c.op == "in":
-            mask &= col.isin(c.value)
+            matched = col.isin(c.value)
         else:
-            mask &= {
+            matched = {
                 "==": col == c.value, "!=": col != c.value, ">": col > c.value,
                 ">=": col >= c.value, "<": col < c.value, "<=": col <= c.value,
             }[c.op]
+        mask &= valid & matched.fillna(False).astype(bool)
     text_filter = getattr(spec, "text_filter", None)
     if text_filter:
         mask &= events[text_filter.feature] == text_filter.equals

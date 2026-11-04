@@ -6,7 +6,7 @@ view's research period, the LLM client from config, runs the loop, turns the cla
 Findings (agent.interim.harness) and returns them with the session metadata.
 
 R2System, R3System and R3USystem take no arguments, as evaluation.systems.make_systems
-builds them; agent.experiment registers them as "r2", "r3" and "r3-u".
+builds them; agent.systems registers them as "r2", "r3" and "r3-u".
 
 research_end None (the split is not agreed yet) is an open end on planted and placebo
 universes. A view does not say which type it is, by design, so the caller may pass a
@@ -162,14 +162,20 @@ class AgentResearchSystem:
             "duplicate_backtests": ports.backtester.duplicates,
             "strict_family_size": report["strict"]["family_size"],
             "findings_passed_strict": report["strict"]["findings_passed_strict"],
+            "findings_passed_attempted": report["strict"]["findings_passed_attempted"],
+            # Per finding: the official value and the two sensitivity checks. Member 5's
+            # uniform rule needs only Finding.p_value_raw and the plan's budget.
             "strict_correction": [
                 {k: c.get(k) for k in ("finding_id", "signal_id", "p_value_corrected",
-                                       "p_value_corrected_strict", "passed_correction",
-                                       "passed_correction_strict")}
+                                       "passed_correction", "p_value_corrected_attempted",
+                                       "passed_correction_attempted",
+                                       "p_value_corrected_strict", "passed_correction_strict")}
                 for c in report["claims"] if c["returned"]],
             "token_breakdown": tokens,
             "steps": totals["steps"],
             "budget": budget,
+            "correction": report["correction"],  # "holm" (tests run) or "none" (R3-U)
+            "tests_in_family": report["tests_in_family"],
             "seed": seed,
             "universe_id": view.universe_id,
             "research_start": str(session.research_start),
@@ -202,6 +208,7 @@ class R3USystem(AgentResearchSystem):
         super().__init__("R3-U", **kwargs)
 
 
-AGENT_SYSTEMS: dict[str, type[AgentResearchSystem]] = {
+# Runner names -> factories. agent.systems registers these (the only registration path).
+AGENT_FACTORIES: dict[str, type[AgentResearchSystem]] = {
     "r2": R2System, "r3": R3System, "r3-u": R3USystem,
 }

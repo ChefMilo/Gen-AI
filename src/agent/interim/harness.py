@@ -15,6 +15,9 @@ multiple-testing correction applied across every test the session ran. Mirrors R
   report instead. Every other claim is returned, significant or not, with the flag.
 - A claim refers to its signal's test (the original's, for a duplicate); its direction
   and spec are the claimed signal's own.
+- Sensitivity checks, measured not enforced, in the report (SystemRun.metadata):
+  "attempted": Holm over the tests actually run, for every system (R3-U included; for
+  R2 and R3 it equals the official value);
 - Strict correction, measured not enforced (item 15): Holm over the family PLUS every
   breakdown group the agent viewed with inspect_results (each group with an n and a
   mean is one test; groups without a t-test enter at p = 1). Recorded per claim as
@@ -62,6 +65,7 @@ def claims_to_findings(
     aliases, specs, viewed_groups = aliases or {}, specs or {}, viewed_groups or {}
     corrected = corrected_p_values(attempts, correct)
     raw = corrected_p_values(attempts, correct=False)
+    attempted = holm_adjust(raw)  # Holm over the tests actually run, for every system
     group_ps = [1.0 if p is None else p for p in viewed_groups.values()]
     strict = holm_adjust(raw + group_ps)[: len(attempts)]
     latest = {a["signal_id"]: i for i, a in enumerate(attempts)}
@@ -100,6 +104,8 @@ def claims_to_findings(
         ))
         outcomes.append({**outcome, "returned": True, "finding_id": findings[-1].finding_id,
                          "p_value_corrected": corrected[i], "passed_correction": passed,
+                         "p_value_corrected_attempted": attempted[i],
+                         "passed_correction_attempted": attempted[i] <= alpha,
                          "p_value_corrected_strict": strict[i],
                          "passed_correction_strict": strict[i] <= alpha})
     report = {
@@ -115,6 +121,8 @@ def claims_to_findings(
             "family_size": len(attempts) + len(group_ps),
             "breakdown_groups": len(group_ps),
             "findings_passed": sum(o.get("passed_correction", False) for o in outcomes),
+            "findings_passed_attempted": sum(o.get("passed_correction_attempted", False)
+                                             for o in outcomes),
             "findings_passed_strict": sum(o.get("passed_correction_strict", False)
                                           for o in outcomes),
         },

@@ -4,11 +4,12 @@
     python -m agent.experiment --config configs/experiment_agent_dev.yaml --systems r0,r2,r3
     python -m agent.experiment --config ... --systems r2,r3 --out results/dev_agent_v2
 
-The runner's own CLI (python -m evaluation.run) does not import agent code, so it cannot
-see the agent systems; this entry point registers them and then drives the runner's
-public functions (load_base_data, build_universes, run_systems, evaluate_runs,
-write_summary), editing nothing in src/evaluation. Once the runner can import system
-modules from its config, this file can go away.
+Final and other planned experiments run through the runner's own CLI
+(python -m evaluation.run --config configs/final.yaml), which imports agent.systems
+from the config's systems block. This entry point is for DEV plans only: universes built
+from dev plant specs, which the runner's planner cannot express. It registers the agent
+systems through the same agent.systems module and drives the runner's public functions
+(load_base_data, build_universes, run_systems, evaluate_runs, write_summary).
 
 The config file has two parts:
 - experiment: an evaluation.plan.ExperimentConfig (data, budget, holding days, systems);
@@ -32,7 +33,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.config import load_config
-from agent.system import AGENT_SYSTEMS, TOKEN_FIELDS
+from agent.system import AGENT_FACTORIES, TOKEN_FIELDS
 from evaluation import systems as runner_systems
 from evaluation.plan import (
     EXPERIMENT_CONFIG_PATH,
@@ -97,12 +98,6 @@ def load_dev_config(path: Path) -> DevExperimentConfig:
         return DevExperimentConfig.model_validate(yaml.safe_load(f))
 
 
-def register_agent_systems() -> None:
-    """Make r2, r3 and r3-u known to evaluation.systems.make_systems. Built that way they
-    have no universe-type map, so they refuse to run without research_end."""
-    runner_systems.SYSTEMS.update(AGENT_SYSTEMS)
-
-
 def _spec_key(spec: PlantSpec) -> tuple:
     text = spec.text_feature.model_dump_json() if spec.text_feature else None
     return (spec.event_type, spec.condition, text, spec.effect, spec.direction)
@@ -160,9 +155,10 @@ def make_systems(names: list[str], plan: ExperimentPlan, config: dict, **agent_k
     holding_days = plan.config.holding_days
     out = []
     for name in names:
-        if name in AGENT_SYSTEMS:
-            out.append(AGENT_SYSTEMS[name](config=config, holding_days=holding_days,
-                                           universe_types=types, **agent_kwargs))
+        if name in AGENT_FACTORIES:
+            out.append(AGENT_FACTORIES[name](
+                config=config, holding_days=holding_days, universe_types=types,
+                **agent_kwargs))
         else:
             out.extend(runner_systems.make_systems([name], holding_days))
     return out
@@ -256,13 +252,13 @@ def main(argv: list[str] | None = None) -> int:
     exp = cfg.experiment.resolved()
     names = [n.strip() for n in (args.systems.split(",") if args.systems
                                  else exp.system_names) if n.strip()]
-    register_agent_systems()
+    import agent.systems  # noqa: F401  (registers r2, r3, r3-u with the runner)
     unknown = [n for n in names if n not in runner_systems.SYSTEMS]
     if unknown:
         parser.error(f"unknown systems {unknown}; known: {sorted(runner_systems.SYSTEMS)}"
                      " (r0 needs PR #17)")
     config = load_config()
-    if any(n in AGENT_SYSTEMS for n in names):
+    if any(n in AGENT_FACTORIES for n in names):
         from agent.run_session import load_dotenv_if_available
 
         load_dotenv_if_available()

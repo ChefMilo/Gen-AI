@@ -12,7 +12,6 @@ from agent.experiment import (
     DevExperimentConfig,
     build_dev_plan,
     check_dev_only,
-    register_agent_systems,
     run_dev_experiment,
 )
 from agent.finding import Finding
@@ -119,10 +118,19 @@ def r2_run(dev, tmp_path_factory):
     return outcome, out, clients
 
 
+def register_agent_systems():
+    """Register through agent.systems, imported here (inside a test with runner_registry)
+    so that collecting this file never touches the runner's real registry."""
+    import importlib
+
+    importlib.import_module("agent.systems").register()
+
+
 @pytest.fixture
 def runner_registry(monkeypatch):
     """A private copy of the runner's system registry."""
     monkeypatch.setattr(runner_systems, "SYSTEMS", dict(runner_systems.SYSTEMS))
+    monkeypatch.setattr(runner_systems, "SYSTEM_SOURCES", dict(runner_systems.SYSTEM_SOURCES))
     return runner_systems.SYSTEMS
 
 
@@ -421,3 +429,24 @@ def test_r3_and_r3u_see_byte_identical_prompts(planted_view, registry):
             assert "not enforced" not in text and "disabled" not in text
     assert seen["R3"] == seen["R3-U"]
     assert versions["R3"] == versions["R3-U"]
+
+
+@pytest.mark.parametrize("name", ["R2", "R3", "R3-U"])
+def test_runs_carry_what_the_uniform_and_sensitivity_scores_need(name, planted_view,
+                                                                 registry):
+    """Member 5's uniform rule needs only each Finding's p_value_raw plus the plan's budget;
+    the attempted and strict sensitivity values are in the metadata, for every system."""
+    from evaluation.metrics import UniformCorrection, recorrect
+
+    view, types = planted_view
+    run = AgentResearchSystem(name, config=agent_config(trace_dir=None),
+                              client_factory=Clients(), universe_types=types).run(view, 30, 1)
+    [finding] = run.findings
+    [uniform] = recorrect(run.findings, UniformCorrection(budget=30, alpha=0.05))
+    assert uniform.p_value_corrected == pytest.approx(min(1.0, 30 * finding.p_value_raw))
+    [row] = run.metadata["strict_correction"]
+    assert row["p_value_corrected_attempted"] == pytest.approx(finding.p_value_raw)  # 1 test
+    assert {"passed_correction_attempted", "p_value_corrected_strict",
+            "passed_correction_strict"} <= set(row)
+    assert run.metadata["correction"] == ("none" if name == "R3-U" else "holm")
+    assert run.metadata["budget"] == 30 and run.metadata["tests_in_family"] == 1
