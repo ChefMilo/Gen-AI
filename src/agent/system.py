@@ -75,6 +75,77 @@ def breakdown_groups_viewed(session) -> int:
     return total
 
 
+def check_research_end(view, universe_types: Mapping[str, str] | None) -> None:
+    """Refuse an open research_end unless the universe is known to be planted or placebo."""
+    if view.research_end is not None:
+        return
+    if universe_types is None:
+        raise ResearchEndNotSet(
+            "research_end is not set and the universe type is unknown, so this run "
+            "could touch holdout data. The team must set the research/holdout split "
+            "(research_end in configs/default.yaml), or run through agent.experiment."
+        )
+    if universe_types.get(view.universe_id) not in OPEN_END_TYPES:
+        raise ResearchEndNotSet(
+            f"research_end is not set: refusing to run on real universe "
+            f"{view.universe_id!r}. The team must set the research/holdout split "
+            "(research_end in configs/default.yaml) before agents run on real data."
+        )
+
+
+def run_metadata(session, ports, report: dict, client, agent: dict, budget: int, seed: int,
+                 view, started: float, mask: bool) -> dict[str, Any]:
+    """SystemRun.metadata for a session over interim ports (agent systems and R1)."""
+    start_event = session.trace.events[0]
+    end_event = session.trace.events[-1]
+    totals = end_event["totals"]
+    tokens = {f: int(totals[f]) for f in TOKEN_FIELDS}
+    model = agent.get("model") or getattr(client, "model", None)
+    metadata = {
+        "backtests_used": ports.backtester.tests_used,
+        "tool_calls": totals["tool_calls"],
+        "tokens": sum(tokens.values()),
+        "cost_usd": cost_usd(model, tokens, agent.get("pricing")),
+        "wall_time_s": time.perf_counter() - started,
+        "trace_path": str(session.trace.path) if session.trace.path else None,
+        "model": model,
+        "prompt_version": start_event.get("prompt_version"),
+        "end_reason": end_event["reason"],
+        "invalid_calls": totals["invalid_calls"],
+        "inspect_results_calls": len(_tool_events(session, "inspect_results")),
+        "breakdown_groups_viewed": breakdown_groups_viewed(session),
+        "duplicate_backtests": ports.backtester.duplicates,
+        "strict_family_size": report["strict"]["family_size"],
+        "findings_passed_strict": report["strict"]["findings_passed_strict"],
+        "findings_passed_attempted": report["strict"]["findings_passed_attempted"],
+        # Per finding: the official value and the two sensitivity checks. Member 5's
+        # uniform rule needs only Finding.p_value_raw and the plan's budget.
+        "strict_correction": [
+            {k: c.get(k) for k in ("finding_id", "signal_id", "p_value_corrected",
+                                   "passed_correction", "p_value_corrected_attempted",
+                                   "passed_correction_attempted",
+                                   "p_value_corrected_strict", "passed_correction_strict")}
+            for c in report["claims"] if c["returned"]],
+        "token_breakdown": tokens,
+        "steps": totals["steps"],
+        "budget": budget,
+        "correction": report["correction"],  # "holm" (tests run) or "none" (R3-U)
+        "tests_in_family": report["tests_in_family"],
+        "seed": seed,
+        "universe_id": view.universe_id,
+        "research_start": str(session.research_start),
+        "research_end": None if ports.research_end is None else str(ports.research_end),
+        "warnings": list(ports.warnings),
+        "mask_dates_in_text": mask,
+        "retriever": ports.retriever_kind,
+        "signal_specs": {sid: spec.model_dump(mode="json")
+                         for sid, spec in ports.backtester.specs.items()},
+        "harness": report,
+        "agent_totals": totals,
+    }
+    return metadata
+
+
 class AgentResearchSystem:
     """One agent system (R2, R3 or R3-U) for the experiment runner."""
 
@@ -100,20 +171,7 @@ class AgentResearchSystem:
         self.rag_factory = rag_factory
 
     def _check_research_end(self, view) -> None:
-        if view.research_end is not None:
-            return
-        if self._universe_types is None:
-            raise ResearchEndNotSet(
-                "research_end is not set and the universe type is unknown, so this run "
-                "could touch holdout data. The team must set the research/holdout split "
-                "(research_end in configs/default.yaml), or run through agent.experiment."
-            )
-        if self._universe_types.get(view.universe_id) not in OPEN_END_TYPES:
-            raise ResearchEndNotSet(
-                f"research_end is not set: refusing to run on real universe "
-                f"{view.universe_id!r}. The team must set the research/holdout split "
-                "(research_end in configs/default.yaml) before agents run on real data."
-            )
+        check_research_end(view, self._universe_types)
 
     def run(self, view, budget: int, seed: int) -> SystemRun:
         started = time.perf_counter()
@@ -141,53 +199,8 @@ class AgentResearchSystem:
             specs={sid: s.model_dump(mode="json") for sid, s in ports.backtester.specs.items()},
             viewed_groups=ports.backtester.viewed_groups,
         )
-        start_event = session.trace.events[0]
-        end_event = session.trace.events[-1]
-        totals = end_event["totals"]
-        tokens = {f: int(totals[f]) for f in TOKEN_FIELDS}
-        model = agent.get("model") or getattr(client, "model", None)
-        metadata = {
-            "backtests_used": ports.backtester.tests_used,
-            "tool_calls": totals["tool_calls"],
-            "tokens": sum(tokens.values()),
-            "cost_usd": cost_usd(model, tokens, agent.get("pricing")),
-            "wall_time_s": time.perf_counter() - started,
-            "trace_path": str(session.trace.path) if session.trace.path else None,
-            "model": model,
-            "prompt_version": start_event.get("prompt_version"),
-            "end_reason": end_event["reason"],
-            "invalid_calls": totals["invalid_calls"],
-            "inspect_results_calls": len(_tool_events(session, "inspect_results")),
-            "breakdown_groups_viewed": breakdown_groups_viewed(session),
-            "duplicate_backtests": ports.backtester.duplicates,
-            "strict_family_size": report["strict"]["family_size"],
-            "findings_passed_strict": report["strict"]["findings_passed_strict"],
-            "findings_passed_attempted": report["strict"]["findings_passed_attempted"],
-            # Per finding: the official value and the two sensitivity checks. Member 5's
-            # uniform rule needs only Finding.p_value_raw and the plan's budget.
-            "strict_correction": [
-                {k: c.get(k) for k in ("finding_id", "signal_id", "p_value_corrected",
-                                       "passed_correction", "p_value_corrected_attempted",
-                                       "passed_correction_attempted",
-                                       "p_value_corrected_strict", "passed_correction_strict")}
-                for c in report["claims"] if c["returned"]],
-            "token_breakdown": tokens,
-            "steps": totals["steps"],
-            "budget": budget,
-            "correction": report["correction"],  # "holm" (tests run) or "none" (R3-U)
-            "tests_in_family": report["tests_in_family"],
-            "seed": seed,
-            "universe_id": view.universe_id,
-            "research_start": str(session.research_start),
-            "research_end": None if ports.research_end is None else str(ports.research_end),
-            "warnings": list(ports.warnings),
-            "mask_dates_in_text": mask,
-            "retriever": ports.retriever_kind,
-            "signal_specs": {sid: spec.model_dump(mode="json")
-                             for sid, spec in ports.backtester.specs.items()},
-            "harness": report,
-            "agent_totals": totals,
-        }
+        metadata = run_metadata(session, ports, report, client, agent, budget, seed, view,
+                                started, mask)
         return SystemRun(findings=findings, session_id=session.session_id, metadata=metadata)
 
 

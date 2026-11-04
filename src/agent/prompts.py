@@ -61,6 +61,21 @@ def _join(values) -> str:
     return ", ".join(str(v) for v in values)
 
 
+# R1's reporting section: one JSON answer, no tools (src/baselines/r1_single_shot.py).
+SINGLE_SHOT_ANSWER = [
+    "## Your answer",
+    "This session is single-shot: there are no tools and no feedback. Apply the research "
+    "protocol in your reasoning, then propose the signals you would test.",
+    "Reply with JSON only: a list of objects, each "
+    '{"hypothesis": "...", "rationale": "the economic reason", "spec": {"event_type": "...", '
+    '"conditions": [{"field": "...", "op": "...", "value": ...}], "holding_days": N, '
+    '"direction": "long" or "short"}}.',
+    "Use only the event types, fields, operators, holding periods and directions above. A "
+    "spec that is not valid is skipped. Every valid signal is backtested and reported with "
+    "its corrected result.",
+]
+
+
 def correction_rule(alpha: float | None) -> str:
     """The brief's statement of the correction, with alpha from the config."""
     level = f"alpha = {alpha:g}" if alpha is not None else "the significance level (alpha)"
@@ -71,13 +86,18 @@ def correction_rule(alpha: float | None) -> str:
     )
 
 
-def build_task_brief(session: ResearchSession) -> str:
+def build_task_brief(session: ResearchSession, single_shot: bool = False) -> str:
+    """The task brief. single_shot (R1): no tools and no feedback, so tool names are left
+    out and the reporting section asks for one JSON answer; R2-R3-U's brief is unchanged."""
     options = session.backtester.signal_options()
     budget = session.backtester.budget_status()
     fields = session.events.available_fields()
     min_events = session.config.get("min_events")
     budget_text = (
-        f"Backtest budget: {budget['budget']} run_backtest calls "
+        f"Budget: at most {budget['budget']} signals. The harness backtests each valid one, "
+        "and each counts as one test."
+        if single_shot
+        else f"Backtest budget: {budget['budget']} run_backtest calls "
         f"({budget['tests_used']} used so far)."
         if budget.get("budget_enforced", True)
         else f"Backtest budget: not enforced ({budget['tests_used']} tests used so far)."
@@ -103,7 +123,8 @@ def build_task_brief(session: ResearchSession) -> str:
         "## Events",
         f"Event types: {_join(options['event_types'])}.",
         "",
-        "## Condition fields (for query_events and define_signal)",
+        "## Condition fields" if single_shot
+        else "## Condition fields (for query_events and define_signal)",
         *[f"- {name}: {description}" for name, description in fields.items()],
         "",
         "Operators by field kind:",
@@ -122,8 +143,9 @@ def build_task_brief(session: ResearchSession) -> str:
         "",
         "## Signals",
         f"Holding periods (trading days): {_join(options['holding_days'])}. "
-        f"Directions: {_join(options['directions'])}. "
-        f"inspect_results breakdowns: {_join(options['breakdowns'])}.",
+        f"Directions: {_join(options['directions'])}."
+        + ("" if single_shot
+           else f" inspect_results breakdowns: {_join(options['breakdowns'])}."),
         "",
         "## Limits",
         budget_text,
@@ -133,6 +155,8 @@ def build_task_brief(session: ResearchSession) -> str:
             f"Minimum events per signal: {min_events}. Signals with fewer events cannot "
             "count as findings."
         )
+    if single_shot:
+        return "\n".join([*lines, correction_text, "", *SINGLE_SHOT_ANSWER])
     lines += [
         correction_text,
         "",

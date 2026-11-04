@@ -34,6 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent.config import load_config
 from agent.system import AGENT_FACTORIES, TOKEN_FIELDS
+from baselines.r1_single_shot import R1System
 from evaluation import systems as runner_systems
 from evaluation.plan import (
     EXPERIMENT_CONFIG_PATH,
@@ -62,6 +63,9 @@ from universes.placebo import DEFAULT_MIN_GAP_DAYS
 from universes.planted import PlantSpec, candidate_specs
 
 log = logging.getLogger(__name__)
+# The LLM systems, built here with the plan's private universe-type map (agent.systems
+# registers the same classes with the runner).
+LLM_FACTORIES = {"r1": R1System, **AGENT_FACTORIES}
 TRACES_DIR = "traces"
 
 
@@ -155,8 +159,8 @@ def make_systems(names: list[str], plan: ExperimentPlan, config: dict, **agent_k
     holding_days = plan.config.holding_days
     out = []
     for name in names:
-        if name in AGENT_FACTORIES:
-            out.append(AGENT_FACTORIES[name](
+        if name in LLM_FACTORIES:
+            out.append(LLM_FACTORIES[name](
                 config=config, holding_days=holding_days, universe_types=types,
                 **agent_kwargs))
         else:
@@ -258,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"unknown systems {unknown}; known: {sorted(runner_systems.SYSTEMS)}"
                      " (r0 needs PR #17)")
     config = load_config()
-    if any(n in AGENT_FACTORIES for n in names):
+    if any(n in LLM_FACTORIES for n in names):
         from agent.run_session import load_dotenv_if_available
 
         load_dotenv_if_available()
