@@ -185,9 +185,9 @@ def test_detection_curve_data():
 
 
 def test_snr_bin_edges():
-    values = [0.0, 0.99, 1.0, 1.99, 2.0, 3.0, 3.99, 4.0, 40.0]
+    values = [0.0, 1.99, 2.0, 3.99, 4.0, 7.99, 8.0, 15.99, 16.0, 40.0]
     assert [snr_bin(v) for v in values] == [
-        "<1", "<1", "1-2", "1-2", "2-3", "3-4", "3-4", ">=4", ">=4"]
+        "<2", "<2", "2-4", "2-4", "4-8", "4-8", "8-16", "8-16", ">=16", ">=16"]
     assert snr_bin(float("nan")) is None
 
 
@@ -203,9 +203,9 @@ def test_detection_curve_by_snr_bin():
     ]
     out = detection_curve_data(tables(rows, truths), seed=0, n_boot=N_BOOT)
     snr = out[out["group"] == "snr_bin"].set_index("value")
-    assert list(snr.index) == [v for v in SNR_BIN_ORDER if v in {"<1", "1-2", ">=4"}]
-    assert snr["n_truths"].to_dict() == {"<1": 1, "1-2": 2, ">=4": 2}  # NaN left out
-    assert snr["recall"].to_dict() == {"<1": 0.0, "1-2": 0.5, ">=4": 1.0}
+    assert list(snr.index) == [v for v in SNR_BIN_ORDER if v in {"<2", "4-8"}]
+    assert snr["n_truths"].to_dict() == {"<2": 3, "4-8": 2}  # NaN left out
+    assert snr["recall"].to_dict() == {"<2": pytest.approx(1 / 3), "4-8": 1.0}
     assert list(out["group"].unique()) == ["strength", "feature_type", "complexity",
                                            "snr_bin"]
 

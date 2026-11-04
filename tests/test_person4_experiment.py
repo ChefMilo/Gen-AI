@@ -5,6 +5,7 @@ import pytest
 
 import agent.tools as tools
 from agent.llm import FakeLLM, LLMResponse, ToolCall
+from evaluation.summary import read_summary
 from harness.agent_adapter import finalize_agent_session, register_research_tools
 from harness.agent_session import make_research_session
 from harness.backtester import HarnessConfig, ResearchBacktester
@@ -49,8 +50,8 @@ def test_offline_pipeline_is_paired_and_reproducible(tmp_path, monkeypatch):
     second = run_offline(config, tmp_path / "second")
     assert first["paid_model_calls"] == second["paid_model_calls"] == 0
     assert first["paired_sessions"] == 4
-    a = pd.read_csv(tmp_path / "first/per_universe.csv")
-    b = pd.read_csv(tmp_path / "second/per_universe.csv")
+    a = read_summary(tmp_path / "first", "per_universe")
+    b = read_summary(tmp_path / "second", "per_universe")
     pd.testing.assert_frame_equal(a, b)
     assert set(a["system"]) == {"R3", "R3-U"}
     assert set(a["universe_type"]) == {"planted", "placebo"}

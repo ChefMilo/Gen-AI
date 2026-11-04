@@ -50,6 +50,9 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "default
 
 GROUPS = ["overall", "strength", "complexity", "feature_type", "event_type", "direction"]
 EFFICIENCY_FIELDS = ["backtests_used", "tool_calls", "tokens", "cost_usd"]
+# Split of tokens, from the session metadata's token_breakdown when it has one.
+TOKEN_FIELDS = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+                "output_tokens"]
 
 
 class UniformCorrection(BaseModel):
@@ -139,7 +142,8 @@ def efficiency(findings: list[Finding], metadata: Mapping[str, Any]) -> dict[str
     """EFFICIENCY_FIELDS found in the session metadata, else on the findings.
 
     Fields that are absent are left out. On findings, a field is read as a
-    session-level value: the first one that is not None.
+    session-level value: the first one that is not None. TOKEN_FIELDS come from
+    metadata["token_breakdown"], when it is there.
     """
     out = {}
     for field in EFFICIENCY_FIELDS:
@@ -150,6 +154,8 @@ def efficiency(findings: list[Finding], metadata: Mapping[str, Any]) -> dict[str
             )
         if value is not None:
             out[field] = value
+    breakdown = metadata.get("token_breakdown") or {}
+    out.update({field: breakdown[field] for field in TOKEN_FIELDS if field in breakdown})
     return out
 
 
