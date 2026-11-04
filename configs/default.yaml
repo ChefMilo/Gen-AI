@@ -35,7 +35,7 @@ rag:
       query: reason for the share repurchase program and how it will be funded
       labels:
         undervalued: shares described as undervalued or an attractive investment
-        excess_capital: returning excess capital or strong free cash flow to shareholders
+        excess_cash: returning excess cash or strong free cash flow to shareholders
         offset_dilution: offsetting dilution from equity compensation or share issuance
         unspecified: no reason given beyond the authorization itself
 

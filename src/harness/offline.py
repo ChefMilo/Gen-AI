@@ -96,7 +96,7 @@ def demonstration_data(config: OfflineConfig, seed: int) -> BaseData:
             else "OFFLINE SYNTHETIC: the board authorised a new share buyback."
         )
         feature = "dividend_framing" if dividend else "buyback_rationale"
-        label = ("confidence" if small else "routine") if dividend else "excess_capital"
+        label = ("confidence" if small else "routine") if dividend else "excess_cash"
         rows.append(
             {
                 "event_id": f"demo-{ticker}",
