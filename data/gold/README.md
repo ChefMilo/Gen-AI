@@ -59,9 +59,14 @@ the filing checked as in step 5, so the agreement number reflects two independen
 ## Rules
 
 - **Common stock only.** Preferred-stock dividends are not events.
+- **A row is one specific dividend or authorisation.** Statistics and history (yield, "152
+  consecutive dividends", "increased by $0.05 in 2022", a dividends line in a snapshot or
+  table) are not events.
 - **Buybacks are authorisations.** A board authorising, increasing or extending a
   repurchase program is an event. Reports of shares already repurchased, or of the amount
   left under a program, are not events and get no row.
+  A suspension or termination of a program is not an authorisation either: no row (say so
+  in the notes of another event from the filing, if there is one).
 - **is_new_announcement:** `True` if this filing announces the decision for the first
   time (the board declares or approves it now). An 8-K/A that repeats an event from its
   original 8-K is `False`; it is `True` only if the amendment adds a new decision. `False` if the text says "previously
@@ -80,6 +85,8 @@ the filing checked as in step 5, so the agreement number reflects two independen
   `False` for an increase or extension.
 - **Dates:** `YYYY-MM-DD`. `announcement_date` is the date the text gives for the
   decision or announcement. `buyback_expiry` only if an end date is stated.
+  A specific date given as expected ("expected to be paid on or about May 15, 2024")
+  counts as stated; leave it blank only if no exact day is given ("in the fourth quarter").
 - **quote:** one sentence copied exactly from the text, the one that states the event.
   `python -m ingest.gold` checks it is in the filing when `GENAI_DATA_DIR` is set.
 - **notes:** anything a second reader should know (ambiguity, the buyback total).
