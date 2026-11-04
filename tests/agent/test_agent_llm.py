@@ -219,3 +219,49 @@ def test_request_passes_effort_and_tools_when_set():
     request = build_anthropic_request("m", 16000, "high", "sys", [], TOOLS)
     assert request["output_config"] == {"effort": "high"}
     assert request["tools"] == TOOLS
+
+
+def test_anthropic_client_refuses_to_build_under_pytest(monkeypatch):
+    from agent.llm import LiveLLMInTestError
+
+    assert "PYTEST_CURRENT_TEST" in __import__("os").environ
+    with pytest.raises(LiveLLMInTestError, match="FakeLLM"):
+        AnthropicClient(model="m", max_tokens=100)
+
+
+def test_live_client_in_tests_needs_the_explicit_opt_in(monkeypatch):
+    """With AGENT_ALLOW_LIVE_LLM_IN_TESTS=1 the guard steps aside (a stub SDK here, so
+    nothing is called)."""
+    import sys
+    import types
+
+    fake = types.ModuleType("anthropic")
+    fake.Anthropic = lambda: "stub-sdk-client"
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+    monkeypatch.setenv("AGENT_ALLOW_LIVE_LLM_IN_TESTS", "1")
+    assert AnthropicClient(model="m", max_tokens=100)._client == "stub-sdk-client"
+    monkeypatch.setenv("AGENT_ALLOW_LIVE_LLM_IN_TESTS", "yes")  # only "1" counts
+    with pytest.raises(RuntimeError, match="refusing"):
+        AnthropicClient(model="m", max_tokens=100)
+
+
+def test_dotenv_leaks_cannot_reach_a_real_client(tmp_path, monkeypatch):
+    """Regression: src/ingest/llm.py loads .env into os.environ for the rest of the pytest
+    process; an agent test must still not get credentials or a live client."""
+    import os
+
+    from ingest.llm import load_dotenv
+
+    env = tmp_path / ".env"
+    env.write_text("ANTHROPIC_API_KEY=sk-test-not-real\nAGENT_MODEL=claude-test\n")
+    for name in ("ANTHROPIC_API_KEY", "AGENT_MODEL"):  # so teardown removes the fake values
+        monkeypatch.setenv(name, "placeholder")
+        monkeypatch.delenv(name)
+    load_dotenv(env)
+    assert os.environ["ANTHROPIC_API_KEY"] == "sk-test-not-real"  # the leak, reproduced
+    import agent.system as system_module
+
+    with pytest.raises(RuntimeError, match="real LLM client"):
+        system_module.default_client({"model": "claude-test", "max_tokens": 10}, 0)
+    with pytest.raises(RuntimeError, match="refusing"):
+        AnthropicClient(model="claude-test", max_tokens=10)

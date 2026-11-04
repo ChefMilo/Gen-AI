@@ -42,10 +42,14 @@ rag:
 agent:
   model: null  # null = use $AGENT_MODEL
   max_steps: 60  # model turns per session
-  max_session_input_tokens: 400000  # cached and uncached input, summed over turns
+  max_session_input_tokens: 600000  # cached and uncached input, summed over turns
   max_tokens: 16000  # per model response, thinking included
   effort: null  # null = provider default; else low | medium | high | xhigh | max
   thinking_display: summarized  # summarized | omitted | null (= model default)
   tool_result_max_chars: 4000  # longer tool results are truncated
+  mask_dates_in_text: true  # replace dates in passages and quotes with [DATE] (PR #6)
+  # USD per million tokens, per model, for SystemRun.metadata cost_usd (null if absent)
+  pricing:
+    claude-sonnet-5-5: {input: 2.00, cache_write: 2.50, cache_read: 0.10, output: 10.00}
   cache_dir: results/llm_cache
   trace_dir: results/traces

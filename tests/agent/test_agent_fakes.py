@@ -440,3 +440,11 @@ def test_good_bool_and_number_values_still_work(fake_session):
         {"field": "buyback_pct_mcap", "op": ">=", "value": 3},
     ])
     assert not is_error and result["n_events"] > 0
+
+
+def test_events_without_a_feature_have_none_not_nan(events):
+    from agent.fakes import FakeRetriever
+
+    buyback = events.loc[events["event_type"] == "buyback", "event_id"].iloc[0]
+    assert events.set_index("event_id").loc[buyback, "dividend_framing"] is None
+    assert FakeRetriever(events).text_feature([buyback], "dividend_framing") == []

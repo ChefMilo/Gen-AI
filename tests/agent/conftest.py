@@ -54,6 +54,30 @@ def agent_config(**overrides):
     return {"research_start": date(2016, 1, 1), "research_end": None, "agent": agent | overrides}
 
 
+LIVE_CREDENTIALS = ("ANTHROPIC_API_KEY", "AGENT_MODEL", "EXTRACT_MODEL")
+
+
+class RealClientInTest(RuntimeError):
+    pass
+
+
+def _refuse_real_client(*args, **kwargs):
+    raise RealClientInTest("a real LLM client was requested in a test; inject a FakeLLM")
+
+
+@pytest.fixture(autouse=True)
+def no_live_llm(monkeypatch):
+    """Every agent test runs without credentials and without a real client: other code in
+    the same pytest process may have loaded .env into os.environ (src/ingest/llm.py)."""
+    import agent.llm as llm_module
+    import agent.system as system_module
+
+    for name in LIVE_CREDENTIALS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv(llm_module.LIVE_IN_TESTS_ENV, raising=False)
+    monkeypatch.setattr(system_module, "default_client", _refuse_real_client)
+
+
 @pytest.fixture
 def make_session(monkeypatch):
     monkeypatch.setattr(session_module, "code_version", lambda: None)

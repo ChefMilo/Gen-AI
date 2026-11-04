@@ -1,0 +1,59 @@
+# DEV ONLY: specs and seeds here must not be used in the final evaluation.
+#
+# A tiny plan for developing the agent systems inside the experiment runner:
+# 2 planted universes (one dev spec each) and 3 placebo, on dev-only data and seeds.
+# agent.experiment refuses dev specs that are in the final spec grid and seeds that the
+# final plan (configs/experiment.yaml) uses.
+#
+#   python -m agent.experiment --config configs/experiment_agent_dev.yaml --systems null,random
+#   python -m agent.experiment --config configs/experiment_agent_dev.yaml --systems r2,r3 --out results/dev_agent_v2
+
+experiment:  # evaluation.plan.ExperimentConfig; unset keys come from configs/default.yaml
+  experiment_id: dev_agent_v1
+  n_planted: 0  # unused: the dev universes below replace the planned ones
+  n_placebo: 0
+  include_real: false
+  base_seed: 9000
+  holding_days: 5
+  backtest_budget: 15
+  systems: ["null", "random", "r0", "r2", "r3"]  # r0 needs PR #17
+  n_boot: 200
+  data:
+    source: synthetic
+    n_tickers: 120
+    start: 2015-01-01
+    end: 2026-12-31
+    seed: 9000  # dev-only synthetic prices
+    events_seed: 9000
+
+dev:
+  universe_id_prefix: dev_
+  planted:
+    - seed: 9001
+      specs:
+        # Large-cap new buyback programs, +1.5% over 5 days (the grid has small caps
+        # only, and no 1.5% strength). About 175 targets on the dev data.
+        - spec_id: dev_new_program_large_up150bp
+          event_type: buyback
+          condition: is_new_program == True and mcap_bucket == "large"
+          effect: 0.015
+          direction: 1
+          strength: moderate
+          complexity: conjunction
+          feature_type: structured
+    - seed: 9002
+      specs:
+        # Buybacks framed as returning excess cash, -1.5% (the grid's text plant is
+        # "undervalued"). About 300 targets on the dev data.
+        - spec_id: dev_rationale_excess_cash_down150bp
+          event_type: buyback
+          text_feature: {feature: buyback_rationale, equals: fake_excess_cash}
+          effect: 0.015
+          direction: -1
+          strength: moderate
+          complexity: single
+          feature_type: text
+  placebo:
+    - seed: 9101
+    - seed: 9102
+    - seed: 9103

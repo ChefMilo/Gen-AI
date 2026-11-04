@@ -21,8 +21,10 @@ from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
-from pydantic import Field, model_validator
+from pydantic import Field
 
+from agent.interim.spec import DIRECTIONS, OPS_BY_KIND, make_spec_models, select
+from agent.textmask import maybe_mask
 from agent.tools import (
     RAG_SYSTEMS,
     Tool,
@@ -84,12 +86,6 @@ TEXT_FEATURES: dict[str, tuple[str, tuple[str, ...]]] = {
 BREAKDOWNS = ("year", "sector", "mcap_bucket")
 EVENT_TYPES = ("dividend", "buyback")
 HOLDING_DAYS = (5,)  # the fakes only have 5-day CARs
-DIRECTIONS = ("long", "short")
-OPS_BY_KIND = {
-    "number": ("==", "!=", ">", ">=", "<", "<=", "in"),
-    "category": ("==", "!=", "in"),
-    "bool": ("==", "!="),
-}
 
 
 # --- Data ---------------------------------------------------------------------------
@@ -108,8 +104,9 @@ def make_fake_universe(seed: int = 0, n_tickers: int = N_TICKERS) -> pd.DataFram
     events["sector"] = events["ticker"].map(sector_of)
     for feature in TEXT_FEATURES:
         values = [tf.get(feature, {}) for tf in events["text_features"]]
-        events[feature] = [v.get("label") for v in values]
-        events[f"{feature}_quote"] = [v.get("quote") for v in values]
+        # object dtype keeps None for missing values (pandas 3 would store NaN in a str column)
+        events[feature] = pd.Series([v.get("label") for v in values], dtype=object)
+        events[f"{feature}_quote"] = pd.Series([v.get("quote") for v in values], dtype=object)
 
     rng = np.random.default_rng([seed, 42])
     noise = rng.normal(0.0, NOISE_SD, len(events))
@@ -128,74 +125,9 @@ def planted_mask(events: pd.DataFrame) -> pd.Series:
 # --- Temporary stand-ins for Member 4's SignalSpec ------------------------------------
 
 
-class FakeCondition(ToolArgs):
-    field: Literal[tuple(FIELDS)]  # type: ignore[valid-type]
-    op: Literal["==", "!=", ">", ">=", "<", "<=", "in"]
-    value: bool | float | str | list[bool | float | str]
-
-    @model_validator(mode="after")
-    def _check_value(self) -> "FakeCondition":
-        _, kind, allowed = FIELDS[self.field]
-        values = self.value if isinstance(self.value, list) else [self.value]
-        if (self.op == "in") != isinstance(self.value, list):
-            raise ValueError("use a list value with 'in', and a single value otherwise")
-        if self.op not in OPS_BY_KIND[kind]:
-            ops = " ".join(OPS_BY_KIND[kind])
-            raise ValueError(f"{self.field} is a {kind} field; use one of: {ops}")
-        if kind == "number" and any(isinstance(v, (bool, str)) for v in values):
-            raise ValueError(f"{self.field} is a number field; value must be a number")
-        if kind == "bool" and not all(isinstance(v, bool) for v in values):
-            raise ValueError(f"{self.field} is a bool field; value must be true or false")
-        if allowed and any(v not in allowed for v in values):
-            raise ValueError(f"{self.field} must be one of {list(allowed)}")
-        return self
-
-
-class FakeTextFilter(ToolArgs):
-    feature: Literal[tuple(TEXT_FEATURES)]  # type: ignore[valid-type]
-    equals: str
-
-    @model_validator(mode="after")
-    def _check_label(self) -> "FakeTextFilter":
-        labels = TEXT_FEATURES[self.feature][1]
-        if self.equals not in labels:
-            raise ValueError(f"{self.feature} labels are {list(labels)}")
-        return self
-
-
-class FakeSignalSpec(ToolArgs):
-    event_type: Literal[EVENT_TYPES]  # type: ignore[valid-type]
-    conditions: list[FakeCondition] = Field(default_factory=list, max_length=5)
-    text_filter: FakeTextFilter | None = None
-    holding_days: Literal[HOLDING_DAYS] = HOLDING_DAYS[0]  # type: ignore[valid-type]
-    direction: Literal[DIRECTIONS] = "long"  # type: ignore[valid-type]
-
-    @model_validator(mode="after")
-    def _fields_match_event_type(self) -> "FakeSignalSpec":
-        for c in self.conditions:
-            applies_to = FIELDS[c.field][0]
-            if applies_to not in (None, self.event_type):
-                raise ValueError(f"{c.field} only applies to {applies_to} events")
-        if self.text_filter and TEXT_FEATURES[self.text_filter.feature][0] != self.event_type:
-            raise ValueError(f"{self.text_filter.feature} only applies to "
-                             f"{TEXT_FEATURES[self.text_filter.feature][0]} events")
-        return self
-
-
-def select(events: pd.DataFrame, spec: FakeSignalSpec) -> pd.DataFrame:
-    mask = events["event_type"] == spec.event_type
-    for c in spec.conditions:
-        col = events[c.field]
-        if c.op == "in":
-            mask &= col.isin(c.value)
-        else:
-            mask &= {
-                "==": col == c.value, "!=": col != c.value, ">": col > c.value,
-                ">=": col >= c.value, "<": col < c.value, "<=": col <= c.value,
-            }[c.op]
-    if spec.text_filter:
-        mask &= events[spec.text_filter.feature] == spec.text_filter.equals
-    return events[mask]
+FakeCondition, FakeTextFilter, FakeSignalSpec = make_spec_models(
+    FIELDS, TEXT_FEATURES, EVENT_TYPES, HOLDING_DAYS, prefix="Fake"
+)
 
 
 def event_study(cars: pd.Series) -> dict[str, Any]:
@@ -224,8 +156,11 @@ def _compact(value: Any) -> Any:
     return value.isoformat() if isinstance(value, date) else value
 
 
-def _research_only(events: pd.DataFrame, research_end: date) -> pd.DataFrame:
-    """Stand-in for the harness's time lockout: the fakes never show later events."""
+def _research_only(events: pd.DataFrame, research_end: date | None) -> pd.DataFrame:
+    """Stand-in for the harness's time lockout: the fakes never show later events.
+    None leaves the end open."""
+    if research_end is None:
+        return events.reset_index(drop=True)
     return events[events["first_tradeable_date"] <= research_end].reset_index(drop=True)
 
 
@@ -489,14 +424,22 @@ def inspect_results(session, args: InspectResultsArgs) -> dict:
     return session.backtester.breakdown(args.signal_id, args.by)
 
 
+def _mask_flag(session) -> bool:
+    return bool(session.agent_config.get("mask_dates_in_text", False))
+
+
 def search_announcements(session, args: SearchArgs) -> dict:
     filters = {"ticker": args.ticker, "event_type": args.event_type}
-    return {"results": session.retriever.search(args.query, filters, args.k)}
+    hits = session.retriever.search(args.query, filters, args.k)
+    mask = _mask_flag(session)
+    return {"results": [{**h, "text": maybe_mask(h["text"], mask)} for h in hits]}
 
 
 def get_text_feature(session, args: TextFeatureArgs) -> dict:
     """Label counts over every requested event, plus a few examples with quotes."""
-    values = session.retriever.text_feature(args.event_ids, args.feature)
+    mask = _mask_flag(session)
+    values = [{**v, "quote": maybe_mask(v["quote"], mask)}
+              for v in session.retriever.text_feature(args.event_ids, args.feature)]
     counts: dict[str, int] = {}
     for v in values:
         counts[v["label"]] = counts.get(v["label"], 0) + 1
