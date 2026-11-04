@@ -86,3 +86,33 @@ python scripts/estimate_cost.py     # sessions x tokens x price per LLM system
 **The specs are not final yet.** The text bases use the fake event data's labels (`fake_growth`, `fake_undervalued`), because the final text-feature label set is still being agreed. Once it is, update the grid's text bases to the agreed labels, re-run the oracle check, and re-freeze the plan with `--freeze-plan`. Until then the frozen hash pins the current spec set only.
 
 Scoring reports two rules. The primary rule is each system's own `passed_correction`. The secondary rule (`*_uniform` columns) is a uniform re-correction: Holm over `backtest_budget` at `alpha` from `configs/default.yaml`, recomputed by the evaluator from each finding's `p_value_raw`.
+
+## Summaries and figures
+
+A run writes `results/<id>/summary/`: the result tables as CSV, plus `index.json` (plan hash, systems, universe counts, environment). A summary always covers every system with runs on disk for that plan, so a run with `--systems` never leaves a partial one. Read its CSVs with `evaluation.summary.read_summary`: pandas' defaults read the system name `null` as missing.
+
+Both commands below run offline and run no system:
+
+```bash
+python -m evaluation.summarize --results results/<id>     # re-score the runs on disk, rewrite summary/
+python scripts/make_figures.py --results results/<id>     # PNG + SVG in results/<id>/figures/
+```
+
+`make_figures.py` reads only `summary/`. Its options:
+
+- `--oracle results/<id>/oracle.csv` adds the oracle's findable rate as a dashed line. `scripts/oracle_check.py` writes that file, and only for plans built from a `grid:` block. An `oracle.csv` from another plan is left out, with a note on the figure.
+- `--rule uniform` draws the figures under the uniform rule, as `<name>_uniform`. The default is `--rule own`.
+- `--input-price` and `--output-price` (USD per million tokens) estimate the cost of systems with no `cost_usd`, and the axis says so.
+
+| Figure | Shows |
+|---|---|
+| `detection_curve` | Recall vs strength per system; placebo false discoveries per test |
+| `detection_by_cell` | Recall vs strength, by complexity × feature type |
+| `recall_by_snr` | Recall per system across SNR bins |
+| `r2_vs_r3_text` | R2 vs R3 on text truths: truth-level paired difference, CI and exact McNemar p, with the universe-level test beside it |
+| `r3_vs_r3u` | Recall, precision and placebo false discoveries per test, with paired differences |
+| `cost_vs_recall` | Recall vs mean cost per session |
+
+A system with no data is skipped, with a note on the figure and a log line.
+
+On the final plan each planted universe holds one feature type and each spec appears in 2 universes. A feature type's comparison therefore rests on 8 universes, and each point in `detection_by_cell` on 2 truths.

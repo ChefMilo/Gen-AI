@@ -15,9 +15,12 @@ Output under results/<experiment_id>/ (or --out-dir), which must be git-ignored:
 - runs/<system>/<universe_id>/: findings.jsonl (one Finding per line) and
   metadata.json, written last, which marks the pair finished. A failed pair writes
   error.json (with the traceback) instead and is retried on the next run;
-- summary/: per_universe, recall_breakdowns, truths (evaluation.metrics),
-  system_summary, detection_curve, comparisons (evaluation.stats) and pairs (status
-  and wall time of every system x universe pair), as CSV.
+- summary/: per_universe, recall_breakdowns, truths (evaluation.metrics), system_summary,
+  detection_curve, detection_cells, comparisons, group_comparisons, truth_comparisons
+  (evaluation.stats) and pairs (status and wall time of every system x universe pair on
+  disk), as CSV, plus index.json. It always covers every system with runs on disk for
+  this plan, not just the ones this run was given (python -m evaluation.summarize
+  rewrites it without running anything).
 
 With resume, a pair is skipped when its metadata.json is there and was written for the
 same universe cache key, so runs made on other data or another plan entry are redone.
@@ -60,7 +63,8 @@ from evaluation.plan import (
     plan_sha256,
     save_plan,
 )
-from evaluation.stats import compare_systems, detection_curve_data, system_summary
+from evaluation.stats import summary_frames, system_summary
+from evaluation.summary import INDEX_FILE, SUMMARY_DIR, environment, ordered_systems
 from evaluation.systems import (
     ResearchSystem,
     SystemConfigError,
@@ -84,8 +88,11 @@ from evaluation.universe_store import (
 
 log = logging.getLogger(__name__)
 
-RUNS_DIR, SUMMARY_DIR, PLAN_FILE = "runs", "summary", "plan.json"
+RUNS_DIR, PLAN_FILE = "runs", "plan.json"
 FINDINGS, RUN_META, RUN_ERROR = "findings.jsonl", "metadata.json", "error.json"
+SUMMARY_CSVS = ["pairs", "per_universe", "recall_breakdowns", "truths", "system_summary",
+                "detection_curve", "detection_cells", "comparisons", "group_comparisons",
+                "truth_comparisons"]
 
 
 def default_out_dir(cfg: ExperimentConfig) -> Path:
@@ -240,8 +247,8 @@ def run_pair(
         log.exception("%s on %s failed", system.name, entry.universe_id)
         write_json({
             "status": "failed", "system": system.name, "universe_id": entry.universe_id,
-            "seed": seed, "universe_key": universe_key, "error": repr(err),
-            "traceback": traceback.format_exc(),
+            "seed": seed, "universe_key": universe_key, "wall_time_s": seconds,
+            "error": repr(err), "traceback": traceback.format_exc(),
         }, path / RUN_ERROR)
         return PairStatus(system.name, entry.universe_id, entry.universe_type, "failed",
                           seconds, error=repr(err))
@@ -303,8 +310,46 @@ def evaluate_runs(plan: ExperimentPlan, system_names: list[str],
     return results
 
 
-def write_summary(results: list[UniverseResult], cfg: ExperimentConfig, pairs: list[PairStatus],
+def systems_on_disk(out_dir: Path) -> list[str]:
+    """Every system with a directory under runs/, in reporting order."""
+    runs = Path(out_dir) / RUNS_DIR
+    return ordered_systems(p.name for p in runs.iterdir() if p.is_dir()) if runs.exists() else []
+
+
+def _read_error(path: Path) -> dict:
+    try:
+        return json.loads((path / RUN_ERROR).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def pairs_on_disk(plan: ExperimentPlan, system_names: list[str], out_dir: Path) -> list[PairStatus]:
+    """Finished ("ran") and failed pairs of this plan, read back from runs/. Runs written
+    for another plan entry or other data are left out, as evaluate_runs does."""
+    statuses = []
+    for entry in plan.universes:
+        key = entry.cache_key(plan.fingerprint, FORMAT_VERSION)
+        for name in system_names:
+            path = run_dir(out_dir, name, entry.universe_id)
+            if is_finished(path, key):
+                meta = json.loads((path / RUN_META).read_text(encoding="utf-8"))
+                statuses.append(PairStatus(name, entry.universe_id, entry.universe_type, "ran",
+                                           meta.get("metadata", {}).get("wall_time_s", 0.0),
+                                           meta.get("n_findings")))
+                continue
+            error = _read_error(path)
+            if error.get("universe_key") == key:
+                statuses.append(PairStatus(name, entry.universe_id, entry.universe_type, "failed",
+                                           error.get("wall_time_s", 0.0),
+                                           error=error.get("error")))
+    return statuses
+
+
+def write_summary(results: list[UniverseResult], plan: ExperimentPlan, pairs: list[PairStatus],
                   out_dir: Path) -> tuple[MetricsTables | None, dict[str, Path]]:
+    """Rewrite summary/: the CSVs (a table that cannot be computed leaves no old copy) and
+    index.json."""
+    cfg = plan.config
     summary = Path(out_dir) / SUMMARY_DIR
     summary.mkdir(parents=True, exist_ok=True)
     frames = {"pairs": pd.DataFrame([p.__dict__ for p in pairs],
@@ -316,18 +361,34 @@ def write_summary(results: list[UniverseResult], cfg: ExperimentConfig, pairs: l
             "per_universe": tables.per_universe,
             "recall_breakdowns": tables.breakdowns,
             "truths": tables.truths,
-            "system_summary": system_summary(tables, seed=cfg.base_seed, n_boot=cfg.n_boot),
-            "detection_curve": detection_curve_data(tables, seed=cfg.base_seed,
-                                                    n_boot=cfg.n_boot),
-            "comparisons": compare_systems(tables, seed=cfg.base_seed, n_boot=cfg.n_boot),
+            **summary_frames(tables, seed=cfg.base_seed, n_boot=cfg.n_boot),
         })
     else:
         log.warning("no finished pairs to evaluate")
+    for name in SUMMARY_CSVS:
+        (summary / f"{name}.csv").unlink(missing_ok=True)
     files = {}
     for name, df in frames.items():
         files[name] = summary / f"{name}.csv"
         df.to_csv(files[name], index=False)
+    write_json({
+        "experiment_id": plan.experiment_id,
+        "plan_sha256": plan_sha256(plan),
+        "systems": ordered_systems(r.system for r in results),
+        "universes": {t: len(plan.by_type(t)) for t in ("planted", "placebo", "real")},
+        "files": sorted(path.name for path in files.values()),
+        "environment": environment(),
+        "created_at": datetime.now(UTC).isoformat(),
+    }, summary / INDEX_FILE)
     return tables, files
+
+
+def summarize_results(plan: ExperimentPlan,
+                      out_dir: Path) -> tuple[MetricsTables | None, dict[str, Path]]:
+    """Re-score every system with runs on disk for this plan and rewrite summary/."""
+    names = systems_on_disk(out_dir)
+    results = evaluate_runs(plan, names, out_dir)
+    return write_summary(results, plan, pairs_on_disk(plan, names, out_dir), out_dir)
 
 
 def run_experiment(
@@ -372,8 +433,7 @@ def run_experiment(
     seconds["run"] = time.perf_counter() - start
 
     start = time.perf_counter()
-    results = evaluate_runs(plan, names, out_dir)
-    outcome.tables, outcome.summary_files = write_summary(results, cfg, outcome.pairs, out_dir)
+    outcome.tables, outcome.summary_files = summarize_results(plan, out_dir)
     seconds["evaluate"] = time.perf_counter() - start
     return outcome
 
