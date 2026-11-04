@@ -88,8 +88,14 @@ class DataConfig(BaseModel):
     """Where the base prices and events come from.
 
     synthetic: universes.synthetic prices and benchmarks with fake events.
-    real_prices_fake_events: store.prices (needs $GENAI_DATA_DIR) with FAKE events,
-    until Data's event loader exists.
+    real_prices_fake_events: store.prices (needs $GENAI_DATA_DIR) with FAKE events.
+
+    real: what the real universe (include_real) is built on. base: the same base data as
+    the planted and placebo universes. store: the extracted events (store.events) on
+    real prices and benchmarks (store.prices), from $GENAI_DATA_DIR; the planted and
+    placebo universes keep the base data. real_period picks the store events' period:
+    research (research_start to research_end) or holdout (holdout_start onwards, from
+    configs/default.yaml; look at it once).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -104,6 +110,8 @@ class DataConfig(BaseModel):
     # planted and placebo universe redraws the prices' idiosyncratic noise from its own
     # seed (universes.replicate), so repeated plants are independent draws.
     replicates: Literal["shared", "resample_noise"] = "shared"
+    real: Literal["base", "store"] = "base"
+    real_period: Literal["research", "holdout"] = "research"  # with real: store
 
     @model_validator(mode="after")
     def _replicates_need_synthetic(self) -> "DataConfig":

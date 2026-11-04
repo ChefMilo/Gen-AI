@@ -13,7 +13,7 @@ n_placebo: 10
 specs_per_universe: 4
 base_seed: 10000  # final seeds are 10000+; dev seeds stay below (dev_guard)
 holding_days: 5
-include_real: true  # research period only (load_base_data cuts the data at research_end)
+include_real: true  # research period only (cut at research_end)
 max_dropped_share: 0.1
 systems:
   names: [r0, r1, r2, r3, r3-u]
@@ -30,6 +30,11 @@ data:
   # Each planted and placebo universe redraws the idiosyncratic noise from its own seed
   # (universes.replicate), so repeated plants are independent draws.
   replicates: resample_noise
+  # The real universe is the extracted events (events/events.parquet) on real prices,
+  # from $GENAI_DATA_DIR; the planted and placebo universes stay on the synthetic data
+  # above, so the plan and its hash don't depend on the Data folder.
+  real: store
+  real_period: research
 
 # Planted grid (evaluation.final_grid): strengths x complexity x feature type. Each
 # (complexity, feature type) cell has ONE base, planted at all four strengths, so the
