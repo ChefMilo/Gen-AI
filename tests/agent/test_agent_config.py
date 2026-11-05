@@ -10,6 +10,11 @@ def test_default_config_has_agent_section(monkeypatch):
     assert agent["effort"] is None
     assert agent["thinking_display"] == "summarized"
     assert agent["tool_result_max_chars"] == 4000
+    assert agent["mask_dates_in_text"] is True
+    assert "r3u_budget" not in agent  # R3-U uses the plan's budget
+    assert agent["max_session_input_tokens"] == 600_000
+    assert agent["pricing"]["claude-sonnet-5-5"] == {
+        "input": 2.0, "cache_write": 2.5, "cache_read": 0.1, "output": 10.0}
     assert agent["cache_dir"] == REPO_ROOT / "results" / "llm_cache"
     assert agent["trace_dir"] == REPO_ROOT / "results" / "traces"
 

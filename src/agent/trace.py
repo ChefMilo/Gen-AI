@@ -47,11 +47,13 @@ class Trace:
         effort: str | None,
         code_version: dict | None = None,
         thinking_display: str | None = None,
+        mask_dates_in_text: bool | None = None,
         **extra: Any,
     ) -> dict:
         """system is the system prompt; extra holds session facts (research system, period)."""
         settings = {"model": model, "max_tokens": max_tokens, "effort": effort,
-                    "thinking_display": thinking_display}
+                    "thinking_display": thinking_display,
+                    "mask_dates_in_text": mask_dates_in_text}
         return self.log(
             "session_start",
             config=config,
@@ -127,6 +129,8 @@ class Trace:
             "backtests_linked_to_hypothesis": sum(e.get("hypothesis_id") is not None
                                                   for e in backtests),
             "backtests_unlinked": sum(e.get("hypothesis_id") is None for e in backtests),
+            # run_backtest calls that repeated an earlier test's events (not counted)
+            "duplicate_backtests": sum(e.get("duplicate_of") is not None for e in backtests),
             "hypotheses_recorded": sum(e["entry_kind"] == "hypothesis" for e in notes),
             "hypotheses_with_claim": len(claimed - {None}),
             # evidence grounding: quotes that are exact substrings of earlier tool results

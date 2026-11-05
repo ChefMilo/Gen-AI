@@ -28,7 +28,7 @@ class ResearchSession:
     config: dict[str, Any]
     universe_id: str
     research_start: date
-    research_end: date
+    research_end: date | None  # None only for runner sessions (open end)
     backtester: Backtester
     events: EventQuery
     notebook: Notebook
@@ -55,7 +55,8 @@ class ResearchSession:
             e.data["hypothesis_id"] for e in self.notebook.entries if e.kind == "hypothesis"
         ]
 
-    def log_start(self, system_prompt: str, prompt_version: str | None = None) -> dict:
+    def log_start(self, system_prompt: str, prompt_version: str | None = None,
+                  **extra: Any) -> dict:
         agent = self.agent_config
         return self.trace.session_start(
             self.config,
@@ -66,10 +67,12 @@ class ResearchSession:
             agent.get("effort"),
             code_version=self.code_version,
             thinking_display=agent.get("thinking_display"),
+            mask_dates_in_text=agent.get("mask_dates_in_text"),
             prompt_version=prompt_version,
             agent_system=self.system,
             research_start=self.research_start,
             research_end=self.research_end,
+            **extra,
         )
 
 
@@ -92,8 +95,12 @@ def new_session(
     research_start: date | str | None = None,
     research_end: date | str | None = None,
     in_memory: bool = False,
+    open_end: bool = False,
 ) -> ResearchSession:
     """Build a session. Explicit research dates override the config.
+
+    open_end: allow research_end None (the runner on planted and placebo universes, where
+    the team has not set the split yet; agent.system decides). The CLI never sets it.
 
     TODO(member-3): drop the research_end override once the team agrees the split
     and configs/default.yaml has research_end set.
@@ -103,8 +110,9 @@ def new_session(
     if system in NEEDS_RETRIEVER and retriever is None:
         raise ValueError(f"{system} uses retrieval; pass a retriever")
     start = _as_date(research_start or config.get("research_start"), "research_start")
-    end = _as_date(research_end or config.get("research_end"), "research_end")
-    if end <= start:
+    end_value = research_end or config.get("research_end")
+    end = None if end_value is None and open_end else _as_date(end_value, "research_end")
+    if end is not None and end <= start:
         raise ValueError(f"research_end {end} must be after research_start {start}")
 
     session_id = uuid.uuid4().hex

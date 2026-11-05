@@ -14,6 +14,7 @@ that don't understand it ignore it. Tools are [{"name", "description", "input_sc
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -108,10 +109,14 @@ class CachedClient:
 
     SETTINGS = ("model", "max_tokens", "effort", "thinking_display")
 
-    def __init__(self, inner: LLMClient, cache_dir: str | Path):
+    def __init__(self, inner: LLMClient, cache_dir: str | Path, seed: int | None = None):
+        """seed (the runner's per-pair seed) joins the key, so repeated seeds on the same
+        universe get fresh samples instead of cache replays; None keeps the old keys."""
         self.inner = inner
         self.model = getattr(inner, "model", None)
         self.settings = {name: getattr(inner, name, None) for name in self.SETTINGS}
+        if seed is not None:
+            self.settings["seed"] = seed
         self.cache_dir = Path(cache_dir)
         self.hits = 0
         self.misses = 0
@@ -225,6 +230,23 @@ def build_anthropic_request(
     return request
 
 
+LIVE_IN_TESTS_ENV = "AGENT_ALLOW_LIVE_LLM_IN_TESTS"
+
+
+class LiveLLMInTestError(RuntimeError):
+    """A real LLM client was about to be built inside a test run."""
+
+
+def refuse_live_llm_under_pytest() -> None:
+    """Tests must never call a real LLM: refuse while pytest runs (PYTEST_CURRENT_TEST),
+    unless AGENT_ALLOW_LIVE_LLM_IN_TESTS=1 says so explicitly."""
+    if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get(LIVE_IN_TESTS_ENV) != "1":
+        raise LiveLLMInTestError(
+            "refusing to build a real AnthropicClient under pytest: tests must use FakeLLM "
+            f"(set {LIVE_IN_TESTS_ENV}=1 only for a deliberate live test)"
+        )
+
+
 class AnthropicClient:
     """Claude via the Messages API. Settings come from config, never code."""
 
@@ -234,18 +256,21 @@ class AnthropicClient:
         max_tokens: int,
         effort: str | None = None,
         thinking_display: str | None = None,
+        api_key: str | None = None,
     ):
+        """api_key: None reads $ANTHROPIC_API_KEY (the SDK's default)."""
         if not model:
             raise ValueError("No model set: fill agent.model in the config or set $AGENT_MODEL")
         if thinking_display not in (None, *THINKING_DISPLAYS):
             raise ValueError(f"thinking_display must be one of {THINKING_DISPLAYS} or null")
+        refuse_live_llm_under_pytest()
         import anthropic  # agent extra; imported here so tests never need it
 
         self.model = model
         self.max_tokens = max_tokens
         self.effort = effort
         self.thinking_display = thinking_display
-        self._client = anthropic.Anthropic()  # key from $ANTHROPIC_API_KEY
+        self._client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
 
     def complete(self, system: str, messages: list[dict], tools: list[dict]) -> LLMResponse:
         request = build_anthropic_request(

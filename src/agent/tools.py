@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, Validation
 from agent.finding import EvidenceQuote, FindingClaim
 from agent.llm import ToolCall
 from agent.session import ResearchSession
+from agent.textmask import maybe_mask
 from agent.tool_descriptions import DESCRIPTIONS
 
 AGENT_SYSTEMS = frozenset({"R2", "R3", "R3-U"})  # R1 does not use the loop
@@ -72,6 +73,10 @@ def register(tool: Tool) -> Tool:
         tool.description = DESCRIPTIONS[tool.name]
     _TOOLS[tool.name] = tool
     return tool
+
+
+def unregister(name: str) -> None:
+    _TOOLS.pop(name, None)
 
 
 def tools_for(system: str) -> list[Tool]:
@@ -239,7 +244,7 @@ def ground_evidence(
 ) -> list[dict]:
     """Per quote: with an event_id, the event must exist and be in the claimed signal's full
     event set ("event"); with only a doc_ref, the quote must appear in an earlier tool
-    result ("text")."""
+    result ("text"), after the same date masking as the tool results (mask_dates_in_text)."""
     ids = [q.event_id for q in evidence if q.event_id]
     existing = session.events.existing_event_ids(ids) if ids else set()
     in_signal_ids = set(session.signal_event_ids.get(signal_id, []))
@@ -251,7 +256,9 @@ def ground_evidence(
             out.append({"grounding_method": "event", "grounded": exists and in_signal,
                         "event_exists": exists, "in_signal": in_signal})
         else:
-            out.append({"grounding_method": "text", "grounded": is_grounded(q.quote, corpus)})
+            # The model only saw masked text, so a quote is masked the same way first.
+            quote = maybe_mask(q.quote, session.agent_config.get("mask_dates_in_text", False))
+            out.append({"grounding_method": "text", "grounded": is_grounded(quote, corpus)})
     return out
 
 
@@ -300,8 +307,14 @@ def report_finding(session: ResearchSession, args: ReportFindingArgs) -> dict:
         raise ToolError(f"unknown signal_id {sid!r}. Defined signals: {known}")
     if sid not in session.tested_signals:
         raise ToolError(f"signal {sid!r} was never backtested; call run_backtest first")
-    if any(c.signal_id == sid for c in session.claims):
-        raise ToolError(f"a finding for {sid!r} was already reported; one claim per signal")
+    # A duplicate backtest makes a signal an alias of the one it repeats: one claim per
+    # underlying test, whichever id is reported (ports without aliases: the id itself).
+    canonical = getattr(session.backtester, "canonical", lambda s: s)
+    for c in session.claims:
+        if canonical(c.signal_id) == canonical(sid):
+            same = "" if c.signal_id == sid else f" (same events as {sid!r})"
+            raise ToolError(f"a finding for {c.signal_id!r}{same} was already reported; "
+                            "one claim per signal")
 
     grounding = ground_evidence(session, sid, args.evidence)
     claim = FindingClaim(
