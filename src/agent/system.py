@@ -29,7 +29,9 @@ from agent.interim.ports import build_ports
 from agent.interim.retrieval import RagFactory, shared_index_retriever
 from agent.llm import AnthropicClient, CachedClient, LLMClient
 from agent.loop import run_session
+from agent.prompts import SYSTEM_PROMPT, build_task_brief, prompt_version
 from agent.session import new_session
+from agent.tools import schemas_for
 from evaluation.systems import SystemRun
 from universes.planted import DEFAULT_HOLDING_DAYS
 
@@ -43,6 +45,24 @@ PRICE_FIELDS = {"input_tokens": "input", "cache_read_input_tokens": "cache_read"
 
 class ResearchEndNotSet(RuntimeError):
     pass
+
+
+class PromptNotFrozen(RuntimeError):
+    """A session's prompt_version is not in agent.frozen_prompt_versions."""
+
+
+def check_frozen(name: str, version: str, agent: dict, allow_unfrozen: bool) -> bool:
+    """True if version is frozen for system name (agent.frozen_prompt_versions); a session
+    whose prompt is not frozen is refused unless allow_unfrozen (agent.experiment's
+    --allow-unfrozen, for dev runs; python -m evaluation.run never sets it)."""
+    frozen = version in ((agent.get("frozen_prompt_versions") or {}).get(name) or [])
+    if not frozen and not allow_unfrozen:
+        raise PromptNotFrozen(
+            f"{name}: prompt_version {version} is not in agent.frozen_prompt_versions, so the "
+            "system prompt, brief or tools changed since the freeze (prompt-freeze-v1). "
+            "Dev runs: python -m agent.experiment ... --allow-unfrozen."
+        )
+    return frozen
 
 
 DOTENV = REPO_ROOT / ".env"
@@ -195,6 +215,7 @@ class AgentResearchSystem:
         client_factory: ClientFactory | None = None,
         universe_types: Mapping[str, str] | None = None,
         rag_factory: RagFactory = shared_index_retriever,
+        allow_unfrozen: bool = False,
     ):
         if system not in ("R2", "R3", "R3-U"):
             raise ValueError(f"system must be R2, R3 or R3-U, got {system!r}")
@@ -206,15 +227,15 @@ class AgentResearchSystem:
         self.client_factory = client_factory  # None: default_client, looked up at run time
         self._universe_types = dict(universe_types) if universe_types is not None else None
         self.rag_factory = rag_factory
+        self.allow_unfrozen = allow_unfrozen
 
     def _check_research_end(self, view) -> None:
         check_research_end(view, self._universe_types)
 
-    def run(self, view, budget: int, seed: int) -> SystemRun:
-        started = time.perf_counter()
-        self._check_research_end(view)
-        agent = self.config["agent"]
-        mask = bool(agent.get("mask_dates_in_text", False))
+    def prepare(self, view, budget: int):
+        """(ports, session, prompt_version) for a session on view, before any LLM call.
+        agent.freeze uses this too, so frozen versions are computed exactly as here."""
+        mask = bool(self.config["agent"].get("mask_dates_in_text", False))
         ports = build_ports(view, budget=budget, holding_days=self.holding_days,
                             min_events=self.min_events,
                             with_retriever=self.system in ("R3", "R3-U"), mask_dates=mask,
@@ -226,6 +247,17 @@ class AgentResearchSystem:
             research_start=ports.research_start or self.config.get("research_start"),
             research_end=ports.research_end, open_end=True,
         )
+        version = prompt_version(SYSTEM_PROMPT, build_task_brief(session),
+                                 schemas_for(self.system))  # what run_session will log
+        return ports, session, version
+
+    def run(self, view, budget: int, seed: int) -> SystemRun:
+        started = time.perf_counter()
+        self._check_research_end(view)
+        agent = self.config["agent"]
+        mask = bool(agent.get("mask_dates_in_text", False))
+        ports, session, version = self.prepare(view, budget)
+        frozen = check_frozen(self.name, version, agent, self.allow_unfrozen)
         client = (self.client_factory or default_client)(agent, seed)
         run_session(session, client, seed=seed, warnings=ports.warnings)
 
@@ -238,6 +270,7 @@ class AgentResearchSystem:
         )
         metadata = run_metadata(session, ports, report, client, agent, budget, seed, view,
                                 started, mask)
+        metadata["prompt_frozen"] = frozen
         return SystemRun(findings=findings, session_id=session.session_id, metadata=metadata)
 
 

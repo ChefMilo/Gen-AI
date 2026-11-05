@@ -92,12 +92,14 @@ class R1System:
         min_events: int | None = None,
         client_factory: agent_system.ClientFactory | None = None,
         universe_types: Mapping[str, str] | None = None,
+        allow_unfrozen: bool = False,
     ):
         self.config = config if config is not None else load_config()
         self.holding_days = holding_days
         self.min_events = min_events if min_events is not None else self.config["min_events"]
         self.client_factory = client_factory  # None: agent.system.default_client
         self._universe_types = dict(universe_types) if universe_types is not None else None
+        self.allow_unfrozen = allow_unfrozen
 
     def _ask(self, session, client, message: str) -> tuple[list | None, int, str]:
         """(items or None, retries used, end reason)."""
@@ -116,11 +118,9 @@ class R1System:
                              {"role": "user", "text": RETRY.format(error=e)}]
         return None, MAX_ATTEMPTS - 1, "parse_failed"
 
-    def run(self, view, budget: int, seed: int) -> SystemRun:
-        started = time.perf_counter()
-        agent_system.check_research_end(view, self._universe_types)
-        agent = self.config["agent"]
-        mask = bool(agent.get("mask_dates_in_text", False))
+    def prepare(self, view, budget: int):
+        """(ports, session, brief, prompt_version) before the LLM call (also agent.freeze)."""
+        mask = bool(self.config["agent"].get("mask_dates_in_text", False))
         ports = build_ports(view, budget=budget, holding_days=self.holding_days,
                             min_events=self.min_events, with_retriever=False, mask_dates=mask)
         config = {**self.config, "min_events": self.min_events}
@@ -130,8 +130,16 @@ class R1System:
             research_end=ports.research_end, open_end=True,
         )
         brief = build_task_brief(session, single_shot=True)
-        session.log_start(SYSTEM_PROMPT, prompt_version(SYSTEM_PROMPT, brief, []), seed=seed,
-                          warnings=ports.warnings)
+        return ports, session, brief, prompt_version(SYSTEM_PROMPT, brief, [])
+
+    def run(self, view, budget: int, seed: int) -> SystemRun:
+        started = time.perf_counter()
+        agent_system.check_research_end(view, self._universe_types)
+        agent = self.config["agent"]
+        mask = bool(agent.get("mask_dates_in_text", False))
+        ports, session, brief, version = self.prepare(view, budget)
+        frozen = agent_system.check_frozen(self.name, version, agent, self.allow_unfrozen)
+        session.log_start(SYSTEM_PROMPT, version, seed=seed, warnings=ports.warnings)
         client = (self.client_factory or agent_system.default_client)(agent, seed)
         items, retries, reason = self._ask(session, client, brief)
 
@@ -170,7 +178,7 @@ class R1System:
         )
         metadata = agent_system.run_metadata(session, ports, report, client, agent, budget,
                                              seed, view, started, mask)
-        metadata.update({"specs_proposed": proposed, "specs_invalid": invalid,
-                         "specs_over_budget": over_budget, "parse_retries": retries,
-                         "invalid_calls": invalid})
+        metadata.update({"prompt_frozen": frozen, "specs_proposed": proposed,
+                         "specs_invalid": invalid, "specs_over_budget": over_budget,
+                         "parse_retries": retries, "invalid_calls": invalid})
         return SystemRun(findings=findings, session_id=session.session_id, metadata=metadata)

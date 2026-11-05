@@ -63,7 +63,8 @@ def run_r1(view, replies, budget=30):
 
     config = load_config()
     config["agent"] |= {"model": "claude-sonnet-5-5", "trace_dir": None}
-    run = R1System(config=config, client_factory=factory).run(view, budget, 3)
+    run = R1System(config=config, client_factory=factory, allow_unfrozen=True).run(
+        view, budget, 3)
     return run, llms[0]
 
 

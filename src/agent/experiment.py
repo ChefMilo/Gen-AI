@@ -249,6 +249,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="plan and build universes only")
     parser.add_argument("--no-resume", action="store_true", help="rerun finished pairs")
     parser.add_argument("--model", help="agent model for this run (overrides AGENT_MODEL)")
+    parser.add_argument("--allow-unfrozen", action="store_true",
+                        help="run LLM systems whose prompt_version is not frozen (dev runs)")
     parser.add_argument("--budget", type=int,
                         help="backtest budget per session (default: the config's)")
     args = parser.parse_args(argv)
@@ -270,7 +272,8 @@ def main(argv: list[str] | None = None) -> int:
         config["agent"]["model"] = args.model
     out_dir = args.out_dir or default_out_dir(exp)
     outcome = run_dev_experiment(cfg, names, out_dir, resume=not args.no_resume,
-                                 dry_run=args.dry_run, agent_config=config)
+                                 dry_run=args.dry_run, agent_config=config,
+                                 allow_unfrozen=args.allow_unfrozen)
     print(report(outcome, out_dir))
     return 1 if any(p.status == "failed" for p in outcome.pairs) else 0
 

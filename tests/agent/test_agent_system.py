@@ -111,7 +111,7 @@ def r2_run(dev, tmp_path_factory):
     out = tmp_path_factory.mktemp("dev_run")
     saved = dict(tools._TOOLS)  # sessions register interim tools; restore them afterwards
     try:
-        outcome = run_dev_experiment(cfg, ["r2"], out, data=data,
+        outcome = run_dev_experiment(cfg, ["r2"], out, data=data, allow_unfrozen=True,
                                      agent_config=agent_config(), client_factory=clients)
     finally:
         tools._TOOLS.clear()
@@ -212,7 +212,7 @@ def test_r3_gets_the_retrieval_tools_and_r2_does_not(planted_view, registry, tmp
     tools = {}
     for name in ("R2", "R3"):
         clients = Clients()
-        system = AgentResearchSystem(name, config=agent_config(trace_dir=None),
+        system = AgentResearchSystem(name, config=agent_config(trace_dir=None), allow_unfrozen=True,
                                      client_factory=clients, universe_types=types)
         run = system.run(view, 15, 1)
         tools[name] = {t["name"] for t in clients.made[0][1].calls[0]["tools"]}
@@ -222,7 +222,7 @@ def test_r3_gets_the_retrieval_tools_and_r2_does_not(planted_view, registry, tmp
 
 def test_r3u_uses_the_plan_budget_and_no_correction(planted_view, registry):
     view, types = planted_view
-    system = AgentResearchSystem("R3-U", config=agent_config(trace_dir=None),
+    system = AgentResearchSystem("R3-U", config=agent_config(trace_dir=None), allow_unfrozen=True,
                                  client_factory=Clients(), universe_types=types)
     run = system.run(view, 15, 1)
     assert run.metadata["budget"] == 15 and run.metadata["harness"]["correction"] == "none"
@@ -232,11 +232,11 @@ def test_r3u_uses_the_plan_budget_and_no_correction(planted_view, registry):
 
 def test_real_universe_without_research_end_is_refused(planted_view, registry):
     view, _ = planted_view
-    real = AgentResearchSystem("R2", config=agent_config(trace_dir=None),
+    real = AgentResearchSystem("R2", config=agent_config(trace_dir=None), allow_unfrozen=True,
                                client_factory=Clients(), universe_types={view.universe_id: "real"})
     with pytest.raises(ResearchEndNotSet, match="research/holdout split"):
         real.run(view, 15, 1)
-    no_map = AgentResearchSystem("R2", config=agent_config(trace_dir=None),
+    no_map = AgentResearchSystem("R2", config=agent_config(trace_dir=None), allow_unfrozen=True,
                                  client_factory=Clients())
     with pytest.raises(ResearchEndNotSet, match="universe type is unknown"):
         no_map.run(view, 15, 1)
@@ -246,15 +246,17 @@ def test_real_universe_without_research_end_is_refused(planted_view, registry):
     assert run.metadata["research_end"] == "2019-12-31" and run.metadata["warnings"] == []
 
 
-def test_runner_built_systems_run_now_that_research_end_is_set(dev, tmp_path, registry,
-                                                               runner_registry, monkeypatch):
-    """research_end is set in configs/default.yaml, so systems built by the runner (no
-    universe-type map) run; the guard only refuses an open end (tests above)."""
+def test_runner_built_systems_refuse_an_unfrozen_prompt(dev, tmp_path, registry,
+                                                       runner_registry, monkeypatch):
+    """Systems built by the runner (python -m evaluation.run) cannot allow an unfrozen
+    prompt: on the dev universes (not the final plan) every LLM pair fails before any
+    client is built. research_end is set, so the open-end guard does not trigger."""
     import agent.system as system_module
 
     cfg, data = dev
     register_agent_systems()
-    monkeypatch.setattr(system_module, "default_client", Clients())
+    clients = Clients()
+    monkeypatch.setattr(system_module, "default_client", clients)
     systems = runner_systems.make_systems(["r2"])
     from evaluation.run import run_systems
     from evaluation.universe_store import build_universes
@@ -263,7 +265,9 @@ def test_runner_built_systems_run_now_that_research_end_is_set(dev, tmp_path, re
     assert plan.config.research_end == date(2022, 12, 31)
     build_universes(tmp_path, plan.universes, plan.fingerprint, data)
     statuses = run_systems(plan, systems, data, tmp_path)
-    assert {s.status for s in statuses} == {"ran"}
+    assert {s.status for s in statuses} == {"failed"}
+    assert all("PromptNotFrozen" in s.error for s in statuses)
+    assert clients.made == []  # refused before any client existed
 
 
 def test_the_default_client_is_never_real_in_tests(planted_view, registry):
@@ -272,7 +276,7 @@ def test_the_default_client_is_never_real_in_tests(planted_view, registry):
     view, types = planted_view
     ended = make_view(view.universe_id, view.prices, view.benchmarks, view.events,
                       date(2016, 1, 1), date(2019, 12, 31))
-    system = AgentResearchSystem("R2", config=agent_config(trace_dir=None),
+    system = AgentResearchSystem("R2", config=agent_config(trace_dir=None), allow_unfrozen=True,
                                  universe_types=types)
     with pytest.raises(RuntimeError, match="real LLM client was requested in a test"):
         system.run(ended, 15, 1)
@@ -387,7 +391,7 @@ def breakdown_view():
 
 
 def test_breakdown_path_passes_officially_and_fails_strict(breakdown_view, registry):
-    system = AgentResearchSystem("R2", config=agent_config(trace_dir=None),
+    system = AgentResearchSystem("R2", config=agent_config(trace_dir=None), allow_unfrozen=True,
                                  client_factory=Clients(BREAKDOWN_PATH),
                                  universe_types={"dev_u99": "planted"})
     run = system.run(breakdown_view, 15, 1)
@@ -420,7 +424,7 @@ def test_r3_and_r3u_see_byte_identical_prompts(planted_view, registry):
     seen, versions = {}, {}
     for name in ("R3", "R3-U"):
         clients = Clients()
-        run = AgentResearchSystem(name, config=agent_config(trace_dir=None),
+        run = AgentResearchSystem(name, config=agent_config(trace_dir=None), allow_unfrozen=True,
                                   client_factory=clients, universe_types=types).run(view, 15, 1)
         first = clients.made[0][1].calls[0]
         brief = first["messages"][0]["text"]
@@ -440,7 +444,7 @@ def test_runs_carry_what_the_uniform_and_sensitivity_scores_need(name, planted_v
     from evaluation.metrics import UniformCorrection, recorrect
 
     view, types = planted_view
-    run = AgentResearchSystem(name, config=agent_config(trace_dir=None),
+    run = AgentResearchSystem(name, config=agent_config(trace_dir=None), allow_unfrozen=True,
                               client_factory=Clients(), universe_types=types).run(view, 30, 1)
     [finding] = run.findings
     [uniform] = recorrect(run.findings, UniformCorrection(budget=30, alpha=0.05))
@@ -484,6 +488,7 @@ def test_pilot_summary_reports_r1_parse_stats(dev, tmp_path, registry):
     saved = dict(tools._TOOLS)
     try:
         run_dev_experiment(cfg, ["r1"], tmp_path, data=data, agent_config=agent_config(),
+                           allow_unfrozen=True,
                            client_factory=lambda agent, seed: FakeLLM(replies))
     finally:
         tools._TOOLS.clear()

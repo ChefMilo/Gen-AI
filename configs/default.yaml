@@ -48,6 +48,14 @@ agent:
   thinking_display: summarized  # summarized | omitted | null (= model default)
   tool_result_max_chars: 4000  # longer tool results are truncated
   mask_dates_in_text: true  # replace dates in passages and quotes with [DATE] (PR #6)
+  # Prompt freeze (prompt-freeze-v1, prompt v4): an LLM system refuses a session whose
+  # prompt_version is not listed (python -m agent.freeze --config configs/final.yaml).
+  # Dev runs may pass --allow-unfrozen to agent.experiment; evaluation.run never does.
+  frozen_prompt_versions:
+    r1: [114ad3973638]
+    r2: [acbabba4fe3e]
+    r3: [363f54bdad43]
+    r3-u: [363f54bdad43]
   # USD per million tokens, per model, for SystemRun.metadata cost_usd (null if absent)
   pricing:
     claude-sonnet-5-5: {input: 2.00, cache_write: 2.50, cache_read: 0.10, output: 10.00}
