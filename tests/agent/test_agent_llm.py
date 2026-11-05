@@ -265,3 +265,35 @@ def test_dotenv_leaks_cannot_reach_a_real_client(tmp_path, monkeypatch):
         system_module.default_client({"model": "claude-test", "max_tokens": 10}, 0)
     with pytest.raises(RuntimeError, match="refusing"):
         AnthropicClient(model="claude-test", max_tokens=10)
+
+
+def test_default_client_settings_come_from_dotenv_without_touching_the_environment(
+        tmp_path, monkeypatch):
+    """python -m evaluation.run never loads .env, so the agent's default client reads the
+    model and key from it directly, and must not leave them in os.environ."""
+    import os
+
+    from agent.system import env_or_dotenv
+
+    env = tmp_path / ".env"
+    env.write_text("ANTHROPIC_API_KEY=sk-test-not-real\nAGENT_MODEL=claude-test\n")
+    assert env_or_dotenv("AGENT_MODEL", env) == "claude-test"
+    assert env_or_dotenv("ANTHROPIC_API_KEY", env) == "sk-test-not-real"
+    assert "ANTHROPIC_API_KEY" not in os.environ and "AGENT_MODEL" not in os.environ
+    monkeypatch.setenv("AGENT_MODEL", "from-env")  # the environment wins
+    assert env_or_dotenv("AGENT_MODEL", env) == "from-env"
+    assert env_or_dotenv("AGENT_MODEL", tmp_path / "missing.env") == "from-env"
+    assert env_or_dotenv("NOT_THERE", env) is None
+
+
+def test_anthropic_client_passes_an_explicit_key_to_the_sdk(monkeypatch):
+    import sys
+    import types
+
+    seen = {}
+    fake = types.ModuleType("anthropic")
+    fake.Anthropic = lambda **kwargs: seen.update(kwargs) or "stub"
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+    monkeypatch.setenv("AGENT_ALLOW_LIVE_LLM_IN_TESTS", "1")
+    AnthropicClient(model="m", max_tokens=10, api_key="sk-explicit")
+    assert seen == {"api_key": "sk-explicit"}

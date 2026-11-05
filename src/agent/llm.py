@@ -256,7 +256,9 @@ class AnthropicClient:
         max_tokens: int,
         effort: str | None = None,
         thinking_display: str | None = None,
+        api_key: str | None = None,
     ):
+        """api_key: None reads $ANTHROPIC_API_KEY (the SDK's default)."""
         if not model:
             raise ValueError("No model set: fill agent.model in the config or set $AGENT_MODEL")
         if thinking_display not in (None, *THINKING_DISPLAYS):
@@ -268,7 +270,7 @@ class AnthropicClient:
         self.max_tokens = max_tokens
         self.effort = effort
         self.thinking_display = thinking_display
-        self._client = anthropic.Anthropic()  # key from $ANTHROPIC_API_KEY
+        self._client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
 
     def complete(self, system: str, messages: list[dict], tools: list[dict]) -> LLMResponse:
         request = build_anthropic_request(

@@ -249,26 +249,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="plan and build universes only")
     parser.add_argument("--no-resume", action="store_true", help="rerun finished pairs")
     parser.add_argument("--model", help="agent model for this run (overrides AGENT_MODEL)")
+    parser.add_argument("--budget", type=int,
+                        help="backtest budget per session (default: the config's)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     cfg = load_dev_config(args.config)
+    if args.budget is not None:
+        cfg = cfg.model_copy(update={"experiment": cfg.experiment.model_copy(
+            update={"backtest_budget": args.budget})})
     exp = cfg.experiment.resolved()
     names = [n.strip() for n in (args.systems.split(",") if args.systems
                                  else exp.system_names) if n.strip()]
-    import agent.systems  # noqa: F401  (registers r2, r3, r3-u with the runner)
+    import agent.systems  # noqa: F401  (registers r1, r2, r3, r3-u with the runner)
     unknown = [n for n in names if n not in runner_systems.SYSTEMS]
     if unknown:
-        parser.error(f"unknown systems {unknown}; known: {sorted(runner_systems.SYSTEMS)}"
-                     " (r0 needs PR #17)")
-    config = load_config()
-    if any(n in LLM_FACTORIES for n in names):
-        from agent.run_session import load_dotenv_if_available
-
-        load_dotenv_if_available()
-        config = load_config()  # $AGENT_MODEL may come from .env
-        if args.model:
-            config["agent"]["model"] = args.model
+        parser.error(f"unknown systems {unknown}; known: {sorted(runner_systems.SYSTEMS)}")
+    config = load_config()  # the default client reads AGENT_MODEL and the key from .env
+    if args.model:
+        config["agent"]["model"] = args.model
     out_dir = args.out_dir or default_out_dir(exp)
     outcome = run_dev_experiment(cfg, names, out_dir, resume=not args.no_resume,
                                  dry_run=args.dry_run, agent_config=config)

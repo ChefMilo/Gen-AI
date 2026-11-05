@@ -17,11 +17,13 @@ the trace or the metadata.
 """
 
 import json
+import os
 import time
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 
-from agent.config import load_config
+from agent.config import MODEL_ENV, REPO_ROOT, load_config
 from agent.interim.harness import claims_to_findings
 from agent.interim.ports import build_ports
 from agent.interim.retrieval import RagFactory, shared_index_retriever
@@ -43,10 +45,31 @@ class ResearchEndNotSet(RuntimeError):
     pass
 
 
+DOTENV = REPO_ROOT / ".env"
+
+
+def env_or_dotenv(name: str, path: Path = DOTENV) -> str | None:
+    """$name, else its value in the repo's .env, read WITHOUT writing os.environ (so the
+    key never leaks into the rest of the process). python -m evaluation.run does not load
+    .env itself."""
+    value = os.environ.get(name)
+    if value or not path.is_file():
+        return value or None
+    try:
+        from dotenv import dotenv_values  # agent extra
+    except ImportError:
+        return None
+    return dotenv_values(path).get(name) or None
+
+
 def default_client(agent: dict, seed: int) -> LLMClient:
-    """AnthropicClient from config, behind the response cache keyed by the pair seed."""
-    client = AnthropicClient(agent.get("model"), agent["max_tokens"], agent.get("effort"),
-                             agent.get("thinking_display"))
+    """AnthropicClient from config (model: agent.model, else $AGENT_MODEL or .env), behind
+    the response cache keyed by the pair seed. The key comes from $ANTHROPIC_API_KEY or
+    .env."""
+    client = AnthropicClient(agent.get("model") or env_or_dotenv(MODEL_ENV),
+                             agent["max_tokens"], agent.get("effort"),
+                             agent.get("thinking_display"),
+                             api_key=env_or_dotenv("ANTHROPIC_API_KEY"))
     cache_dir = agent.get("cache_dir")
     return CachedClient(client, cache_dir, seed=seed) if cache_dir else client
 

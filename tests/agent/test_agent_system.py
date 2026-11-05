@@ -7,7 +7,7 @@ import pytest
 
 import agent.session as session_module
 import agent.tools as tools
-from agent.config import load_config
+from agent.config import REPO_ROOT, load_config
 from agent.experiment import (
     DevExperimentConfig,
     build_dev_plan,
@@ -27,6 +27,7 @@ from evaluation.run import load_base_data
 from evaluation.systems import ResearchSystem, make_view
 
 CONDITION = [{"field": "dividend_change_pct", "op": ">", "value": 10}]
+DEV_CONFIG_PATH = REPO_ROOT / "configs" / "experiment_agent_dev.yaml"
 EXPECTED_METADATA = {
     "backtests_used", "tool_calls", "tokens", "cost_usd", "wall_time_s", "trace_path",
     "model", "prompt_version", "end_reason", "invalid_calls", "inspect_results_calls",
@@ -450,3 +451,55 @@ def test_runs_carry_what_the_uniform_and_sensitivity_scores_need(name, planted_v
             "passed_correction_strict"} <= set(row)
     assert run.metadata["correction"] == ("none" if name == "R3-U" else "holm")
     assert run.metadata["budget"] == 30 and run.metadata["tests_in_family"] == 1
+
+
+# --- Pilot summary (agent.pilot_summary) --------------------------------------------------
+
+
+def test_pilot_summary_scores_every_rule_with_tokens_and_cost(r2_run):
+    from agent.pilot_summary import RULES, report, summarize
+
+    outcome, out, _ = r2_run
+    table = summarize(out)
+    r2 = table[table["system"] == "r2"].set_index("rule")
+    assert list(r2.index) == list(RULES)
+    assert r2.loc["official", "recall"] == 1.0  # the scripted finding matches the plant
+    assert not r2[["recall", "precision"]].isna().any().any()
+    assert r2.loc["official", "cache_read_input_tokens"] == 12_000
+    assert r2.loc["official", "cost_usd"] == pytest.approx(2 * (600 * 3 + 6000 * 0.3
+                                                                + 1200 * 3.75 + 300 * 15) / 1e6)
+    text = report(table)
+    assert "attempted" in text and "strict" in text and "uniform" in text
+
+
+def test_pilot_summary_reports_r1_parse_stats(dev, tmp_path, registry):
+    from agent.pilot_summary import report, summarize
+
+    cfg, data = dev
+    good = json.dumps([{"hypothesis": "h", "rationale": "r",
+                        "spec": {"event_type": "dividend", "conditions": CONDITION}},
+                       {"hypothesis": "bad", "rationale": "r", "spec": {"event_type": "x"}}])
+    replies = [LLMResponse(text="not json", usage=Usage(output_tokens=10)),
+               LLMResponse(text=good, usage=Usage(output_tokens=10))]
+    saved = dict(tools._TOOLS)
+    try:
+        run_dev_experiment(cfg, ["r1"], tmp_path, data=data, agent_config=agent_config(),
+                           client_factory=lambda agent, seed: FakeLLM(replies))
+    finally:
+        tools._TOOLS.clear()
+        tools._TOOLS.update(saved)
+    row = summarize(tmp_path).drop_duplicates("system").set_index("system").loc["r1"]
+    sessions = row["sessions"]
+    assert sessions == 2
+    assert (row["specs_proposed"], row["specs_invalid"], row["parse_retries"]) == (
+        2 * sessions, sessions, sessions)
+    assert row["parse_failed"] == 0 and "R1 parsing:" in report(summarize(tmp_path))
+
+
+def test_experiment_cli_budget_flag_sets_the_plan_budget(tmp_path):
+    from agent.experiment import main
+
+    out = tmp_path / "dev"
+    assert main(["--config", str(DEV_CONFIG_PATH), "--systems", "null", "--budget", "30",
+                 "--out", str(out), "--dry-run"]) == 0
+    assert json.loads((out / "plan.json").read_text())["config"]["backtest_budget"] == 30
