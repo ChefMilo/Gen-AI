@@ -55,11 +55,25 @@ def env_or_dotenv(name: str, path: Path = DOTENV) -> str | None:
     value = os.environ.get(name)
     if value or not path.is_file():
         return value or None
-    try:
-        from dotenv import dotenv_values  # agent extra
-    except ImportError:
-        return None
-    return dotenv_values(path).get(name) or None
+    return read_dotenv(path).get(name) or None
+
+
+def read_dotenv(path: Path) -> dict[str, str]:
+    """KEY=value lines of a .env file (comments, blank lines, "export " and matching
+    quotes handled), with no dependency, so it works where the agent extra is absent."""
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.removeprefix("export ").split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        elif " #" in value:
+            value = value.split(" #", 1)[0].rstrip()
+        values[key.strip()] = value
+    return values
 
 
 def default_client(agent: dict, seed: int) -> LLMClient:

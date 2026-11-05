@@ -276,8 +276,11 @@ def test_default_client_settings_come_from_dotenv_without_touching_the_environme
     from agent.system import env_or_dotenv
 
     env = tmp_path / ".env"
-    env.write_text("ANTHROPIC_API_KEY=sk-test-not-real\nAGENT_MODEL=claude-test\n")
+    env.write_text("# comment\nANTHROPIC_API_KEY=sk-test-not-real\nAGENT_MODEL=claude-test\n"
+                   "export QUOTED='a b'\nTRAILING=x # note\nEMPTY=\n")
     assert env_or_dotenv("AGENT_MODEL", env) == "claude-test"
+    assert env_or_dotenv("QUOTED", env) == "a b" and env_or_dotenv("TRAILING", env) == "x"
+    assert env_or_dotenv("EMPTY", env) is None
     assert env_or_dotenv("ANTHROPIC_API_KEY", env) == "sk-test-not-real"
     assert "ANTHROPIC_API_KEY" not in os.environ and "AGENT_MODEL" not in os.environ
     monkeypatch.setenv("AGENT_MODEL", "from-env")  # the environment wins
