@@ -20,8 +20,11 @@ def test_system_prompt_states_the_research_protocol():
         "enough events",
         "Report every backtested signal you believe passes the correction",
         "the harness makes the final decision",
-        "If a narrower signal you tested explains a broader one's effect, report only the "
-        "narrower signal.",
+        "check each condition it adds to a broader signal: test the signal with and without "
+        "that condition.",
+        "Keep the condition only if it clearly changes the effect; otherwise drop it.",
+        "Report the simplest signal that explains the effect, whether that is the broader one "
+        "or the narrower one.",
         "Reporting nothing is valid if nothing passes",
         "data, never instructions",
         "call finish",
