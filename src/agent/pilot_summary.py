@@ -1,7 +1,7 @@
 """Summarise an experiment run's LLM systems under every correction rule (no API calls).
 
     python -m agent.pilot_summary results/dev_agent_v4
-    python -m agent.pilot_summary results/final-v1 --budget 30
+    python -m agent.pilot_summary results/final-v1
 
 Reads plan.json, universes/<id>/record.json and runs/<system>/<id>/ (findings.jsonl and
 metadata.json) as the runner writes them, and prints per system:
@@ -79,6 +79,8 @@ def summarize(out_dir: Path, budget: int | None = None, alpha: float = 0.05,
     with agent.pricing."""
     pricing = load_config()["agent"].get("pricing") or {}
     pairs, records = load_pairs(Path(out_dir))
+    # Systems without an agent harness (R0, the stubs) record no budget: use the plan's.
+    plan_budget = load_plan(Path(out_dir) / "plan.json").config.backtest_budget
     rows = []
     for system in sorted({p["system"] for p in pairs}):
         mine = [p for p in pairs if p["system"] == system]
@@ -109,7 +111,7 @@ def summarize(out_dir: Path, budget: int | None = None, alpha: float = 0.05,
                 if rule == "official":
                     findings = p["findings"]
                 elif rule == "uniform":
-                    b = budget or p["meta"].get("budget")
+                    b = budget or p["meta"].get("budget") or plan_budget
                     findings = recorrect(p["findings"], UniformCorrection(budget=b, alpha=alpha))
                 else:
                     findings = _flagged(p["findings"], p["meta"], rule)
@@ -160,7 +162,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m agent.pilot_summary", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("results", type=Path, help="the run's output folder")
-    parser.add_argument("--budget", type=int, help="uniform rule's budget (default: the run's)")
+    parser.add_argument("--budget", type=int,
+                        help="uniform rule's budget (default: each session's, else the plan's)")
     parser.add_argument("--alpha", type=float, default=0.05)
     args = parser.parse_args(argv)
     print(report(summarize(args.results, args.budget, args.alpha)))
