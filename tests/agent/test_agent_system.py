@@ -508,3 +508,23 @@ def test_experiment_cli_budget_flag_sets_the_plan_budget(tmp_path):
     assert main(["--config", str(DEV_CONFIG_PATH), "--systems", "null", "--budget", "30",
                  "--out", str(out), "--dry-run"]) == 0
     assert json.loads((out / "plan.json").read_text())["config"]["backtest_budget"] == 30
+
+
+def test_pilot_summary_uses_the_plan_budget_for_systems_without_one(r2_run, tmp_path):
+    """R0 and the stub systems record no budget; the uniform rule then uses the plan's
+    (it crashed on results/final-v1's r0 runs before)."""
+    import shutil
+
+    from agent.pilot_summary import summarize
+
+    _, out, _ = r2_run
+    copy = tmp_path / "run"
+    shutil.copytree(out, copy)
+    for meta_path in (copy / "runs").glob("*/*/metadata.json"):
+        run = json.loads(meta_path.read_text(encoding="utf-8"))
+        run["metadata"].pop("budget")
+        meta_path.write_text(json.dumps(run), encoding="utf-8")
+    table = summarize(copy).set_index("rule")
+    with_budget = summarize(out).set_index("rule")
+    assert table.loc["uniform", "recall"] == with_budget.loc["uniform", "recall"]
+    assert table.loc["uniform", "precision"] == with_budget.loc["uniform", "precision"]
