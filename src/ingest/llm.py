@@ -2,7 +2,9 @@
 
 Every reply is cached on disk by (model, max_tokens, system, messages), so reruns and
 batch results cost nothing. The API key comes from $ANTHROPIC_API_KEY or the repo's .env;
-the model from $EXTRACT_MODEL, else $AGENT_MODEL, else DEFAULT_MODEL.
+the model from $EXTRACT_MODEL, else $AGENT_MODEL, else DEFAULT_MODEL. The .env file is read
+without writing os.environ, so its key never reaches other code in the same process (the
+agent's tests and offline runs must not find credentials there).
 
 pip install -e .[llm]
 """
@@ -29,21 +31,38 @@ PRICES = {
 }
 
 
-def load_dotenv(path: Path = REPO_ROOT / ".env") -> None:
-    """KEY=value lines from .env into os.environ, without overriding what is set."""
-    if not path.is_file():
-        return
+DOTENV = REPO_ROOT / ".env"
+
+
+def read_dotenv(path: Path) -> dict[str, str]:
+    """KEY=value lines of a .env file (comments, blank lines, "export " and matching quotes
+    handled; same rules as agent.system.read_dotenv). Never writes os.environ."""
+    values = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        key, value = line.removeprefix("export ").split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        elif " #" in value:
+            value = value.split(" #", 1)[0].rstrip()
+        values[key.strip()] = value
+    return values
+
+
+def env_or_dotenv(name: str, path: Path | None = None) -> str | None:
+    """$name, else its value in .env (read, not loaded into os.environ); None if unset."""
+    path = DOTENV if path is None else path
+    value = os.environ.get(name)
+    if value or not path.is_file():
+        return value or None
+    return read_dotenv(path).get(name) or None
 
 
 def default_model() -> str:
-    load_dotenv()
-    return os.environ.get("EXTRACT_MODEL") or os.environ.get("AGENT_MODEL") or DEFAULT_MODEL
+    return env_or_dotenv("EXTRACT_MODEL") or env_or_dotenv("AGENT_MODEL") or DEFAULT_MODEL
 
 
 @dataclass
@@ -90,8 +109,8 @@ class LLM:
         if self.client is None:
             import anthropic  # optional dependency: pip install -e .[llm]
 
-            load_dotenv()
-            self.client = anthropic.Anthropic()
+            # an explicit key, so .env never has to be loaded into os.environ
+            self.client = anthropic.Anthropic(api_key=env_or_dotenv("ANTHROPIC_API_KEY"))
         return self.client
 
     def params(self, system: str, messages: Messages) -> dict:

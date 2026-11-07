@@ -246,19 +246,19 @@ def test_live_client_in_tests_needs_the_explicit_opt_in(monkeypatch):
 
 
 def test_dotenv_leaks_cannot_reach_a_real_client(tmp_path, monkeypatch):
-    """Regression: src/ingest/llm.py loads .env into os.environ for the rest of the pytest
-    process; an agent test must still not get credentials or a live client."""
+    """Regression (live-call incident): src/ingest/llm.py used to load .env into os.environ
+    for the rest of the pytest process. It now only reads it; and even with credentials in
+    the environment, an agent test still gets no live client."""
     import os
 
-    from ingest.llm import load_dotenv
+    import ingest.llm as ingest_llm
 
     env = tmp_path / ".env"
     env.write_text("ANTHROPIC_API_KEY=sk-test-not-real\nAGENT_MODEL=claude-test\n")
-    for name in ("ANTHROPIC_API_KEY", "AGENT_MODEL"):  # so teardown removes the fake values
-        monkeypatch.setenv(name, "placeholder")
-        monkeypatch.delenv(name)
-    load_dotenv(env)
-    assert os.environ["ANTHROPIC_API_KEY"] == "sk-test-not-real"  # the leak, reproduced
+    monkeypatch.setattr(ingest_llm, "DOTENV", env)
+    assert ingest_llm.default_model() == "claude-test"
+    assert "ANTHROPIC_API_KEY" not in os.environ and "AGENT_MODEL" not in os.environ
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")  # a leak from elsewhere
     import agent.system as system_module
 
     with pytest.raises(RuntimeError, match="real LLM client"):
