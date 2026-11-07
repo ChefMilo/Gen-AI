@@ -68,7 +68,7 @@ def _refuse_real_client(*args, **kwargs):
 @pytest.fixture(autouse=True)
 def no_live_llm(monkeypatch):
     """Every agent test runs without credentials and without a real client: other code in
-    the same pytest process may have loaded .env into os.environ (src/ingest/llm.py)."""
+    the same pytest process may have put credentials in os.environ."""
     import agent.llm as llm_module
     import agent.system as system_module
 
