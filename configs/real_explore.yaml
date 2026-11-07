@@ -1,0 +1,34 @@
+# EXPLORATORY real-data run, OUTSIDE the frozen final plan (configs/final.yaml is unchanged).
+# One universe: the extracted 8-K events (events/events.parquet) on real prices, research
+# period 2016-2022. No planted or placebo universes, so there is no ground truth: the
+# result is "what each system reports on real data", not a detection score.
+#
+#   $env:GENAI_DATA_DIR = "C:\GenAIData"
+#   python -m evaluation.run --config configs/real_explore.yaml          # R0 + R2
+#   python -m evaluation.real_holdout --config configs/real_explore.yaml  # once, after
+#
+# The holdout check (evaluation.real_holdout) re-tests each system's significant findings,
+# fixed as reported, on 2023 onwards. It writes a ledger per system and refuses to run a
+# second time.
+
+experiment_id: real-explore-v1
+n_planted: 0
+n_placebo: 0
+include_real: true
+base_seed: 20000  # outside the dev (< 10000) and final (10000+) seed ranges used so far
+holding_days: 5
+systems:
+  names: [r0, r2]
+  modules: [agent.systems]
+n_boot: 200
+
+data:
+  # The synthetic base data is only there for the planner (no universe is built on it).
+  source: synthetic
+  n_tickers: 30
+  start: 2015-01-01
+  end: 2026-12-31
+  seed: 20000
+  events_seed: 20000
+  real: store
+  real_period: research

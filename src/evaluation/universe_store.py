@@ -59,11 +59,17 @@ EVENT_ORDER = ["first_tradeable_date", "ticker", "event_id"]
 
 @dataclass(frozen=True)
 class BaseData:
-    """The unplanted prices, benchmarks and events every universe is built from."""
+    """The unplanted prices, benchmarks and events every universe is built from.
+
+    real (optional): other data for the real universe only (data.real: store in the
+    config), with its fingerprint. The planted and placebo universes ignore it.
+    """
 
     prices: pd.DataFrame
     benchmarks: pd.DataFrame
     events: pd.DataFrame
+    real: "BaseData | None" = None
+    real_fingerprint: DataFingerprint | None = None
 
 
 @dataclass
@@ -122,6 +128,15 @@ def ensure_git_ignored(path: Path) -> None:
 
 def universe_dir(root: Path, universe_id: str) -> Path:
     return Path(root) / UNIVERSES_DIR / universe_id
+
+
+def entry_data(entry: UniverseEntry, data: BaseData,
+               fingerprint: DataFingerprint) -> tuple[BaseData, DataFingerprint]:
+    """The data and fingerprint entry is built from: data.real for the real universe when
+    it is set, so its cache follows the real data; the base data otherwise."""
+    if entry.universe_type == "real" and data.real is not None:
+        return data.real, data.real_fingerprint
+    return data, fingerprint
 
 
 def entry_prices(entry: UniverseEntry, data: BaseData) -> pd.DataFrame:
@@ -270,6 +285,7 @@ def ensure_universe(
     root: Path, entry: UniverseEntry, fingerprint: DataFingerprint, data: BaseData
 ) -> BuildStatus:
     """Reuse the cached universe if its key matches; build and write it otherwise."""
+    data, fingerprint = entry_data(entry, data, fingerprint)
     path = universe_dir(root, entry.universe_id)
     if is_cached(root, entry, fingerprint):
         return BuildStatus(entry.universe_id, entry.universe_type, "reused", 0.0,
@@ -312,6 +328,7 @@ def load_universe(
     Raises StaleCacheError if the cache belongs to another entry or other data, or
     (with verify) if the rebuilt frames do not match the hashes taken at build time.
     """
+    data, fingerprint = entry_data(entry, data, fingerprint)
     path = universe_dir(root, entry.universe_id)
     if not is_cached(root, entry, fingerprint):
         raise StaleCacheError(f"{entry.universe_id}: no cache for this plan entry and data")

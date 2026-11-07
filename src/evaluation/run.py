@@ -52,11 +52,13 @@ from evaluation.metrics import (
     uniform_correction,
 )
 from evaluation.plan import (
+    DEFAULT_CONFIG_PATH,
     EXPERIMENT_CONFIG_PATH,
     REPO_ROOT,
     ExperimentConfig,
     ExperimentPlan,
     UniverseEntry,
+    data_fingerprint,
     frozen_plan_sha256,
     load_experiment_config,
     plan_experiment,
@@ -137,6 +139,42 @@ def load_base_data(cfg: ExperimentConfig) -> BaseData:
     events = make_fake_events(prices, seed=source.events_seed)
     return restrict_to_period(BaseData(prices, benchmarks, events), cfg.research_start,
                               cfg.research_end)
+
+
+def load_real_data(cfg: ExperimentConfig) -> BaseData:
+    """The real universe's data for data.real: store: the usable extracted events
+    (store.events.load_events) on real prices and benchmarks (store.prices), cut to the
+    research or holdout period (data.real_period). Needs $GENAI_DATA_DIR."""
+    import yaml
+
+    from store.events import load_events
+    from store.prices import load_benchmarks, load_prices
+
+    cfg = cfg.resolved()
+    if cfg.data.real_period == "research":
+        start, end = cfg.research_start, cfg.research_end
+    else:
+        with open(DEFAULT_CONFIG_PATH, encoding="utf-8") as f:
+            start, end = yaml.safe_load(f)["holdout_start"], None
+        log.warning("real universe on the HOLDOUT period (%s onwards): run it once", start)
+    # usable_only=False keeps the 2015 look-back prices before usable_from; load_events
+    # already keeps only usable companies' events from their usable_from date.
+    prices, benchmarks = load_prices(usable_only=False), load_benchmarks()
+    prices = prices[prices["ticker"].isin(set(load_events()["ticker"]))]
+    events = load_events(start, end)
+    return restrict_to_period(BaseData(prices.reset_index(drop=True), benchmarks, events),
+                              start, end)
+
+
+def with_real_data(data: BaseData, cfg: ExperimentConfig) -> BaseData:
+    """data with the real universe's data attached when the config asks for it."""
+    if not (cfg.include_real and cfg.data.real == "store") or data.real is not None:
+        return data
+    real = load_real_data(cfg)
+    log.info("real universe: %d store events on %d tickers' real prices", len(real.events),
+             real.prices["ticker"].nunique())
+    return BaseData(data.prices, data.benchmarks, data.events, real,
+                    data_fingerprint(real.prices, real.benchmarks, real.events))
 
 
 def check_frozen_plan(plan: ExperimentPlan) -> str:
@@ -401,7 +439,8 @@ def run_experiment(
 ) -> ExperimentOutcome:
     """Plan, build or reuse the universes, run the systems, and write the summary.
 
-    data defaults to load_base_data(cfg). dry_run stops after the universes are built.
+    data defaults to load_base_data(cfg); with data.real: store the real universe's data
+    is loaded too (with_real_data). dry_run stops after the universes are built.
     """
     cfg = cfg.resolved()
     out_dir = Path(out_dir) if out_dir is not None else default_out_dir(cfg)
@@ -412,7 +451,7 @@ def run_experiment(
     seconds = {}
 
     start = time.perf_counter()
-    data = data if data is not None else load_base_data(cfg)
+    data = with_real_data(data if data is not None else load_base_data(cfg), cfg)
     seconds["load_data"] = time.perf_counter() - start
 
     start = time.perf_counter()
